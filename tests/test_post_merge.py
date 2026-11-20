@@ -144,6 +144,201 @@ class PostMergeTests(unittest.TestCase):
         self.tick()
         ping.assert_called_once()
 
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_workflow_failure_dedupes_against_existing_open_issue(self, ping):
+        self.workflow_setup()
+        self.led.upsert_item("p", 83, title="Deploy sync backend on main fails npm audit")
+        self.gh.issue_state.return_value = "OPEN"
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow()]
+        self.tick()
+        self.tick()
+        self.gh.create_issue.assert_not_called()
+        self.gh.comment_create.assert_called_once()
+        number, body = self.gh.comment_create.call_args.args
+        self.assertEqual(number, 83)
+        self.assertIn("<!-- mahler:post-merge-failure", body)
+        self.assertIn("/actions/runs/10", body)
+        self.assertEqual(self.led.get_kv("open-post-merge-bug:p:workflow:7:actions_failed"), "83")
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_workflow_failure_migrates_legacy_open_bug_key(self, ping):
+        self.workflow_setup()
+        old_body = (
+            f"<!-- mahler:post-merge-failure project=p number=1 sha={SHA} -->\n"
+            "**Post-merge workflow check failed** for #1 (p#1).\n\n"
+            "- **Failed phase:** `workflow`\n"
+            "- **Failure code:** `actions_failed`\n"
+            "- **Diagnostic:** Deploy sync backend: failure")
+        self.led.upsert_item("p", 83, title="Post-merge workflow fail: p#1",
+                             issue_body=old_body)
+        self.led.set_kv("open-post-merge-bug:p:workflow:actions_failed", "83")
+        self.gh.issue_state.return_value = "OPEN"
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow(
+            id=11, html_url="https://github.com/x/y/actions/runs/11")]
+
+        self.tick()
+
+        self.gh.create_issue.assert_not_called()
+        self.gh.comment_create.assert_called_once()
+        self.assertEqual(self.gh.comment_create.call_args.args[0], 83)
+        self.assertIn("/actions/runs/11", self.gh.comment_create.call_args.args[1])
+        self.assertEqual(
+            self.led.get_kv("open-post-merge-bug:p:workflow:7:actions_failed"), "83"
+        )
+        self.assertFalse(
+            self.led.get_kv("open-post-merge-bug:p:workflow:actions_failed")
+        )
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_workflow_failure_matches_reordered_issue_title_and_recovers(self, ping):
+        self.workflow_setup()
+        self.led.upsert_item(
+            "p", 83,
+            title="Sync backend deploy on main fails npm audit (picomatch high advisory)",
+            issue_body="The main deployment fails npm audit.",
+        )
+        self.led.set_state(
+            "p", 83, "needs_you",
+            question="Wait for upstream, replace vitest/vite, or vendor picomatch?",
+            sorted_at=iso(NOW),
+        )
+        self.gh.issue_state.return_value = "OPEN"
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow(id=44166202813)]
+
+        self.tick()
+
+        self.gh.create_issue.assert_not_called()
+        self.gh.comment_create.assert_called_once()
+        self.assertEqual(self.gh.comment_create.call_args.args[0], 83)
+        self.assertEqual(
+            self.led.get_kv("open-post-merge-bug:p:workflow:7:actions_failed"), "83"
+        )
+
+        self.gh.workflow_runs_for_commit.return_value = [
+            self.workflow(id=44166202813, conclusion="success")
+        ]
+        self.tick()
+
+        item = self.led.item("p", 83)
+        self.assertEqual(item["state"], "inbox")
+        self.assertIsNone(item["sorted_at"])
+        recovery = self.gh.comment_create.call_args.args[1]
+        self.assertIn("44166202813", recovery)
+        self.assertIn(SHA, recovery)
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_workflow_failure_matches_item_with_only_run_id(self, ping):
+        self.workflow_setup()
+        self.led.upsert_item("p", 83, title="Audit remediation",
+                             issue_body="Blocked by Actions run 44166202813.")
+        self.led.set_state("p", 83, "needs_you", sorted_at=iso(NOW))
+        self.gh.issue_state.return_value = "OPEN"
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow(id=44166202813)]
+
+        self.tick()
+
+        self.gh.create_issue.assert_not_called()
+        self.gh.comment_create.assert_called_once()
+        self.assertEqual(self.gh.comment_create.call_args.args[0], 83)
+        self.assertEqual(
+            self.led.get_kv("open-post-merge-bug:p:workflow:7:actions_failed"), "83"
+        )
+        self.gh.comment_create.reset_mock()
+        self.gh.workflow_runs_for_commit.return_value = [
+            self.workflow(id=44166202813, conclusion="success")
+        ]
+
+        self.tick()
+
+        item = self.led.item("p", 83)
+        self.assertEqual(item["state"], "inbox")
+        self.assertIsNone(item["sorted_at"])
+        self.gh.comment_create.assert_called_once()
+        self.assertIn("44166202813", self.gh.comment_create.call_args.args[1])
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_workflow_green_rechecks_and_resumes_needs_you_item(self, ping):
+        self.workflow_setup()
+        self.led.upsert_item("p", 83, title="Deploy sync backend on main fails npm audit")
+        self.led.set_state("p", 83, "needs_you", sorted_at=iso(NOW))
+        self.gh.issue_state.return_value = "OPEN"
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow(conclusion="success")]
+        self.tick()
+        self.tick()
+        item = self.led.item("p", 83)
+        self.assertEqual(item["state"], "inbox")
+        self.assertIsNone(item["sorted_at"])
+        self.gh.comment_create.assert_called_once()
+        body = self.gh.comment_create.call_args.args[1]
+        for evidence in (SHA, "/actions/runs/10", "main", "success"):
+            self.assertIn(evidence, body)
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='workflow_recovered'")), 1)
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_workflow_matching_excludes_unrelated_and_closed_items(self, ping):
+        self.workflow_setup()
+        for n, title in ((81, "Add Deploy sync backend documentation"),
+                         (82, "Other workflow on main fails"),
+                         (83, "Deploy sync backend on main fails")):
+            self.led.upsert_item("p", n, title=title)
+            self.led.set_state("p", n, "needs_you")
+        self.gh.issue_state.return_value = "CLOSED"
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow(conclusion="success")]
+        self.tick()
+        self.assertTrue(all(self.led.item("p", n)["state"] == "needs_you" for n in (81, 82, 83)))
+        self.gh.comment_create.assert_not_called()
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow()]
+        self.tick()
+        self.gh.create_issue.assert_called_once()
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_different_workflows_on_same_commit_have_separate_bugs(self, ping):
+        self.workflow_setup()
+        self.gh.create_issue.side_effect = ["https://github.com/x/y/issues/98", "https://github.com/x/y/issues/99"]
+        self.gh.issue_state.return_value = "OPEN"
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow(), self.workflow(id=11, workflow_id=8, name="Publish", html_url="https://github.com/x/y/actions/runs/11")]
+        self.tick()
+        self.assertEqual(self.gh.create_issue.call_count, 2)
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_newer_red_workflow_prevents_old_green_recovery(self, ping):
+        self.workflow_setup()
+        self.register("b" * 40)
+        self.led.upsert_item("p", 83, title="Deploy sync backend on main fails")
+        self.led.set_state("p", 83, "needs_you")
+        self.gh.issue_state.return_value = "OPEN"
+        self.gh.workflow_runs_for_commit.side_effect = lambda sha: [
+            self.workflow(conclusion="success") if sha == SHA else
+            self.workflow(id=11, head_sha=sha)]
+        self.tick()
+        self.assertEqual(self.led.item("p", 83)["state"], "needs_you")
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_workflow_link_recovers_on_new_commit_and_retries_comment(self, ping):
+        self.workflow_setup()
+        self.led.upsert_item("p", 83, title="Audit failure",
+                             issue_body="https://github.com/x/y/actions/runs/10")
+        self.gh.issue_state.return_value = "OPEN"
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow()]
+        self.tick()
+        self.gh.create_issue.assert_not_called()
+        self.led.set_state("p", 83, "needs_you", sorted_at=iso(NOW))
+        self.register("b" * 40)
+        self.gh.workflow_runs_for_commit.side_effect = lambda sha: [
+            self.workflow() if sha == SHA else self.workflow(
+                id=12, head_sha=sha, conclusion="success",
+                html_url="https://github.com/x/y/actions/runs/12")]
+        self.gh.comment_create.reset_mock()
+        self.gh.comment_create.side_effect = RuntimeError("offline")
+        self.tick()
+        self.assertEqual(self.led.item("p", 83)["state"], "needs_you")
+        self.assertEqual(self.led.get_kv("open-post-merge-bug:p:workflow:7:actions_failed"), "83")
+        self.gh.comment_create.side_effect = None
+        self.tick()
+        self.assertEqual(self.led.item("p", 83)["state"], "inbox")
+        self.assertIn("b" * 40, self.gh.comment_create.call_args.args[1])
+        self.assertFalse(self.led.get_kv("open-post-merge-bug:p:workflow:7:actions_failed"))
+
     def row(self, sha=SHA):
         return self.led.post_merge_check("p", 1, sha)
 

@@ -1,0 +1,38 @@
+.......................................................................................................................................................................................................................................................................................................................usage: mahler prioritize [-h] project {1h,1d,1w,off}
+mahler prioritize: error: argument duration: invalid choice: '2h' (choose from '1h', '1d', '1w', 'off')
+................................................................................../Users/mike/.mahler/worktrees/mahler/1612-run14870/mahler/ledger.py:1962: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+  self.con.execute(
+...........................................................................................................................................................................................................................................................................................................................................................................................................................................................s.......serve: 2026-11-19T15:29:11.926+00:00 method="GET" path="/fragment?layout=phone&tab=models" status=200 size=2031 duration_ms=3.769 event="end"
+serve: 2026-11-19T15:29:11.929+00:00 method="GET" path="/" status=200 size=170538 duration_ms=2.323 event="end"
+.serve: 2026-11-19T15:29:11.956+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.136 event="start"
+serve: 2026-11-19T15:29:11.956+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.530 event="end"
+serve: 2026-11-19T15:29:11.957+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.068 event="start"
+serve: 2026-11-19T15:29:11.957+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.235 event="end"
+serve: 2026-11-19T15:29:11.958+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.074 event="start"
+serve: 2026-11-19T15:29:11.958+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.258 event="end"
+serve: 2026-11-19T15:29:11.959+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.153 event="start"
+serve: 2026-11-19T15:29:11.959+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.353 event="end"
+serve: 2026-11-19T15:29:11.960+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.128 event="start"
+serve: 2026-11-19T15:29:11.960+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.313 event="end"
+.serve: 2026-11-19T15:29:11.991+00:00 method="GET" path="/?project=mahler" status=200 size=136779 duration_ms=2.842 event="end"
+serve: 2026-11-19T15:29:11.994+00:00 method="GET" path="/fragment?project=mahler&layout=desktop&view=backlog" status=200 size=6009 duration_ms=1.943 event="end"
+...........................................................................................................................................................................................................................................................................................................................history: could not index run 1: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpwn0hbeyj', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+.history: could not index run 1: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmp4v679qeh', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+.....history: could not index run 1: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmp0qrm7hpb', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+history: could not index run 2: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmp0qrm7hpb', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+.history: could not index run 1: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpdlv0ysia', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+history: could not index run 2: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpdlv0ysia', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+...............................................................................................................................................................................................................................................................................................................................history: could not index run 1: boom
+history: refresh failed: 'NoneType' object has no attribute 'con'
+......................................................................................................Test console running at http://127.0.0.1:55042
+Launching agent on claude...
+
+Test console running at http://127.0.0.1:55044
+Launching agent on work-codex...
+
+unknown platform nope
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpnj1birwv/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpj20e331x/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpkhp31rsx/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpx_w671iq/.claude
+............

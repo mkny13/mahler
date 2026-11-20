@@ -1,0 +1,487 @@
+..............................................serve: 2026-11-19T15:23:10.683+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.150 event="start"
+serve: 2026-11-19T15:23:10.683+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.408 event="end"
+.................................................serve: 2026-11-19T15:23:12.724+00:00 method="GET" path="/api/releases/mahler?limit=5" status=200 size=424 duration_ms=0.480 event="end"
+...........................................serve: 2026-11-19T15:23:18.007+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.120 event="start"
+serve: 2026-11-19T15:23:18.008+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.537 event="end"
+...........history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: search failed: 'NoneType' object has no attribute 'con'
+history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: search failed: 'NoneType' object has no attribute 'con'
+..............random order seed: 393670573
+  claude-low   stale  5h 25%, weekly: no sample  [5h in 4h 0m]
+  claude       stale  5h 25%, weekly: no sample  [5h in 4h 0m]
+  claude-opus  stale  5h 25%, weekly: no sample  [5h in 4h 0m]
+  agy-claude   stale  5h: no sample, weekly: no sample
+  agy-gemini   stale  5h: no sample, weekly: no sample
+  codex-low    stale  5h: no sample, weekly: no sample
+  codex        stale  5h: no sample, weekly: no sample
+  codex-high   stale  5h: no sample, weekly: no sample
+  cline-free   ok     unknown limit (platform reports no quota signal)
+  jetstream    ok     unknown limit (platform reports no quota signal)
+  claude-api   hard   API credits not configured
+  kilo         ok     unknown limit (platform reports no quota signal)
+  copilot      stale  monthly: no sample
+  copilot-high stale  monthly: no sample
+  kiro         stale  monthly: no sample
+  vibe         ok     unknown limit (platform reports no quota signal)
+...............history: could not index run 1: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmp2dyufz1z', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+history: could not index run 2: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmp2dyufz1z', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+...................................................................................................................serve: 2026-11-19T15:23:39.606+00:00 method="GET" path="/api/releases/mahler?limit=0" status=- size=0 duration_ms=0.173 event="code 400, message invalid limit: must be a positive integer"
+serve: 2026-11-19T15:23:39.606+00:00 method="GET" path="/api/releases/mahler?limit=0" status=400 size=498 duration_ms=0.269 event="end"
+serve: 2026-11-19T15:23:39.607+00:00 method="GET" path="/api/releases/mahler?limit=-5" status=- size=0 duration_ms=0.096 event="code 400, message invalid limit: must be a positive integer"
+serve: 2026-11-19T15:23:39.607+00:00 method="GET" path="/api/releases/mahler?limit=-5" status=400 size=498 duration_ms=0.165 event="end"
+serve: 2026-11-19T15:23:39.607+00:00 method="GET" path="/api/releases/mahler?limit=abc" status=- size=0 duration_ms=0.089 event="code 400, message invalid limit: must be a positive integer"
+serve: 2026-11-19T15:23:39.607+00:00 method="GET" path="/api/releases/mahler?limit=abc" status=400 size=498 duration_ms=0.138 event="end"
+.......................................................serve: 2026-11-19T15:23:43.196+00:00 method="PUT" path="/" status=- size=0 duration_ms=0.148 event="code 405, message only GET, and POST to /api/<action>"
+serve: 2026-11-19T15:23:43.196+00:00 method="PUT" path="/" status=405 size=503 duration_ms=0.224 event="end"
+serve: 2026-11-19T15:23:43.197+00:00 method="DELETE" path="/" status=- size=0 duration_ms=0.045 event="code 405, message only GET, and POST to /api/<action>"
+serve: 2026-11-19T15:23:43.197+00:00 method="DELETE" path="/" status=405 size=503 duration_ms=0.260 event="end"
+serve: 2026-11-19T15:23:43.197+00:00 method="PATCH" path="/" status=- size=0 duration_ms=0.041 event="code 405, message only GET, and POST to /api/<action>"
+serve: 2026-11-19T15:23:43.197+00:00 method="PATCH" path="/" status=405 size=503 duration_ms=0.177 event="end"
+serve: 2026-11-19T15:23:43.198+00:00 method="POST" path="/" status=- size=0 duration_ms=0.082 event="start"
+serve: 2026-11-19T15:23:43.198+00:00 method="POST" path="/" status=- size=0 duration_ms=0.109 event="code 405, message Method Not Allowed"
+serve: 2026-11-19T15:23:43.198+00:00 method="POST" path="/" status=405 size=480 duration_ms=0.149 event="end"
+serve: 2026-11-19T15:23:43.198+00:00 method="POST" path="/api/drop_tables" status=- size=0 duration_ms=0.050 event="start"
+serve: 2026-11-19T15:23:43.198+00:00 method="POST" path="/api/drop_tables" status=- size=0 duration_ms=0.103 event="code 404, message Not Found"
+serve: 2026-11-19T15:23:43.198+00:00 method="POST" path="/api/drop_tables" status=404 size=455 duration_ms=0.142 event="end"
+......history: could not index run 1: boom
+history: refresh failed: 'NoneType' object has no attribute 'con'
+..........................................serve: 2026-11-19T15:23:46.027+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.109 event="start"
+serve: 2026-11-19T15:23:46.027+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.350 event="end"
+.............................................................................................................................................................................................................................serve: 2026-11-19T15:23:57.435+00:00 method="GET" path="/api/run/9998/log" status=- size=0 duration_ms=0.416 event="code 404, message Not Found"
+serve: 2026-11-19T15:23:57.435+00:00 method="GET" path="/api/run/9998/log" status=404 size=455 duration_ms=0.634 event="end"
+..........................................................................................................................................serve: 2026-11-19T15:24:09.532+00:00 method="POST" path="/api/answer" status=- size=0 duration_ms=0.424 event="start"
+serve: 2026-11-19T15:24:09.533+00:00 method="POST" path="/api/answer" status=200 size=40 duration_ms=1.407 event="end"
+serve: 2026-11-19T15:24:09.540+00:00 method="POST" path="/api/answer_undo" status=- size=0 duration_ms=0.719 event="start"
+serve: 2026-11-19T15:24:09.542+00:00 method="POST" path="/api/answer_undo" status=200 size=12 duration_ms=2.583 event="end"
+serve: 2026-11-19T15:24:09.545+00:00 method="POST" path="/api/answer_undo" status=- size=0 duration_ms=0.229 event="start"
+serve: 2026-11-19T15:24:09.545+00:00 method="POST" path="/api/answer_undo" status=400 size=38 duration_ms=0.923 event="end"
+.............serve: 2026-11-19T15:24:09.964+00:00 method="GET" path="/api/releases/mahler" status=200 size=105 duration_ms=0.999 event="end"
+serve: 2026-11-19T15:24:09.967+00:00 method="GET" path="/api/releases/mahler.json" status=200 size=105 duration_ms=1.026 event="end"
+serve: 2026-11-19T15:24:09.972+00:00 method="GET" path="/api/projects/mahler/releases.json" status=200 size=105 duration_ms=0.561 event="end"
+..........................................................usage: mahler prioritize [-h] project {1h,1d,1w,off}
+mahler prioritize: error: argument duration: invalid choice: '2h' (choose from '1h', '1d', '1w', 'off')
+...................................................................................history: could not index run 2: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpuyxbfy9z', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+..................................serve: 2026-11-19T15:24:25.108+00:00 method="GET" path="/status" status=- size=0 duration_ms=0.109 event="code 404, message Not Found"
+serve: 2026-11-19T15:24:25.108+00:00 method="GET" path="/status" status=404 size=455 duration_ms=0.190 event="end"
+...history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+.....................................................serve: 2026-11-19T15:24:26.337+00:00 method="GET" path="/api/releases/mahler" status=200 size=105 duration_ms=0.335 event="end"
+..serve: 2026-11-19T15:24:26.367+00:00 method="GET" path="/" status=200 size=132301 duration_ms=2.056 event="end"
+...................history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+....history: could not index run 2: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmp9ui5kic1', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+..............................................................................................................................................serve: 2026-11-19T15:24:33.684+00:00 method="POST" path="/api/brief_seen" status=- size=0 duration_ms=0.193 event="start"
+serve: 2026-11-19T15:24:33.684+00:00 method="POST" path="/api/brief_seen" status=200 size=23 duration_ms=0.463 event="end"
+serve: 2026-11-19T15:24:33.687+00:00 method="GET" path="/api/state" status=200 size=22803 duration_ms=3.134 event="end"
+..........................................................................................................................serve: 2026-11-19T15:24:35.730+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.186 event="start"
+serve: 2026-11-19T15:24:35.730+00:00 method="POST" path="/api/pause" status=400 size=52 duration_ms=0.341 event="end"
+serve: 2026-11-19T15:24:35.730+00:00 method="POST" path="/api/clear_backoff" status=- size=0 duration_ms=0.047 event="start"
+serve: 2026-11-19T15:24:35.730+00:00 method="POST" path="/api/clear_backoff" status=400 size=53 duration_ms=0.211 event="end"
+.....................................................serve: 2026-11-19T15:24:41.290+00:00 method="GET" path="/screenshots/1d97644cc8fcf07ee841f30ce8891f71e820c6afecaa75c6854d746846607c91" status=404 size=23 duration_ms=0.261 event="end"
+...............................................................................................history: could not index run 1: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpdmidsqmr', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+.p#7: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+mahler ship: couldn't record worktree for cleanup — git worktree list --porcelain: fatal: not a git repository (or any of the parent directories): .git
+x#5: PR #88 handed to the conductor — it watches CI and merges on green.
+p#7: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+p#7: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+p#7: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+p#7: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+p#7: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+p#7: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+p#7: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+p#7: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+p#7: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+mahler ship: couldn't record worktree for cleanup — git worktree list --porcelain: fatal: not a git repository (or any of the parent directories): .git
+x#5: PR #88 handed to the conductor — it watches CI and merges on green.
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpcnk_5qx9/.claude
+mahler#74: lesson scanner could not run; no lessons loaded: 'types.SimpleNamespace' object does not support the context manager protocol (missed __exit__ method)
+mahler#74: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+.......................................................serve: 2026-11-19T15:24:56.762+00:00 method="GET" path="/api/run/9997/log" status=- size=0 duration_ms=0.224 event="code 404, message Not Found"
+serve: 2026-11-19T15:24:56.763+00:00 method="GET" path="/api/run/9997/log" status=404 size=455 duration_ms=0.308 event="end"
+..........................................serve: 2026-11-19T15:24:58.185+00:00 method="POST" path="/api/attach" status=- size=0 duration_ms=0.113 event="start"
+serve: 2026-11-19T15:24:58.186+00:00 method="POST" path="/api/attach" status=400 size=60 duration_ms=0.411 event="end"
+.....................................................................................serve: 2026-11-19T15:25:02.444+00:00 method="POST" path="/api/attach" status=- size=0 duration_ms=0.089 event="start"
+serve: 2026-11-19T15:25:02.444+00:00 method="POST" path="/api/attach" status=200 size=78 duration_ms=0.424 event="end"
+..........................................................................................serve: 2026-11-19T15:25:09.469+00:00 method="GET" path="/api/run/9999/log" status=200 size=60 duration_ms=12.176 event="end"
+...............................................................................................................history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: search failed: 'NoneType' object has no attribute 'con'
+................................................................................................history: could not index run 1: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpqoyn8aok', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+...........serve: 2026-11-19T15:25:30.190+00:00 method="GET" path="/screenshots/1d97644cc8fcf07ee841f30ce8891f71e820c6afecaa75c6854d746846607c91" status=404 size=23 duration_ms=0.706 event="end"
+serve: 2026-11-19T15:25:30.191+00:00 method="GET" path="/screenshots/1d97644cc8fcf07ee841f30ce8891f71e820c6afecaa75c6854d746846607c91" status=404 size=23 duration_ms=0.392 event="end"
+serve: 2026-11-19T15:25:30.192+00:00 method="GET" path="/screenshots/1d97644cc8fcf07ee841f30ce8891f71e820c6afecaa75c6854d746846607c91" status=404 size=23 duration_ms=0.381 event="end"
+.serve: 2026-11-19T15:25:30.220+00:00 method="GET" path="/api/releases/nonexistent" status=- size=0 duration_ms=0.118 event="code 404, message Not Found"
+serve: 2026-11-19T15:25:30.220+00:00 method="GET" path="/api/releases/nonexistent" status=404 size=455 duration_ms=0.217 event="end"
+serve: 2026-11-19T15:25:30.221+00:00 method="GET" path="/api/releases/mahler" status=- size=0 duration_ms=0.179 event="code 404, message Not Found"
+serve: 2026-11-19T15:25:30.221+00:00 method="GET" path="/api/releases/mahler" status=404 size=455 duration_ms=0.240 event="end"
+...........................................................................serve: 2026-11-19T15:25:34.894+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.218 event="start"
+serve: 2026-11-19T15:25:34.894+00:00 method="POST" path="/api/chat" status=200 size=85 duration_ms=0.532 event="end"
+serve: 2026-11-19T15:25:34.896+00:00 method="GET" path="/api/chat?project=mahler&session_id=839a5f568c26d8da3af85a3129616c7e" status=200 size=1032 duration_ms=0.311 event="end"
+serve: 2026-11-19T15:25:34.897+00:00 method="GET" path="/api/chat?project=mahler&session_id=839a5f568c26d8da3af85a3129616c7e&after=10" status=200 size=395 duration_ms=0.327 event="end"
+serve: 2026-11-19T15:25:34.897+00:00 method="GET" path="/api/chat?project=mahler&session_id=839a5f568c26d8da3af85a3129616c7e&after=-1" status=400 size=51 duration_ms=0.256 event="end"
+................serve: 2026-11-19T15:25:37.471+00:00 method="GET" path="/api/state" status=200 size=22790 duration_ms=4.071 event="end"
+serve: 2026-11-19T15:25:37.472+00:00 method="POST" path="/api/end_session" status=- size=0 duration_ms=0.095 event="start"
+serve: 2026-11-19T15:25:37.472+00:00 method="POST" path="/api/end_session" status=200 size=12 duration_ms=0.415 event="end"
+serve: 2026-11-19T15:25:37.476+00:00 method="GET" path="/api/state" status=200 size=22757 duration_ms=3.244 event="end"
+serve: 2026-11-19T15:25:37.479+00:00 method="GET" path="/fragment" status=200 size=5202 duration_ms=2.091 event="end"
+serve: 2026-11-19T15:25:37.482+00:00 method="GET" path="/fragment" status=200 size=5202 duration_ms=2.760 event="end"
+serve: 2026-11-19T15:25:37.484+00:00 method="POST" path="/api/end_session" status=- size=0 duration_ms=0.181 event="start"
+serve: 2026-11-19T15:25:37.484+00:00 method="POST" path="/api/end_session" status=400 size=49 duration_ms=0.530 event="end"
+.......................................serve: 2026-11-19T15:25:39.247+00:00 method="GET" path="/fragment?layout=phone&tab=models" status=200 size=2031 duration_ms=4.514 event="end"
+serve: 2026-11-19T15:25:39.251+00:00 method="GET" path="/" status=200 size=170538 duration_ms=3.505 event="end"
+......serve: 2026-11-19T15:25:39.343+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.384 event="start"
+serve: 2026-11-19T15:25:39.511+00:00 method="POST" path="/api/pause" status=200 size=12 duration_ms=167.902 event="end"
+..................................serve: 2026-11-19T15:25:41.318+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.119 event="start"
+serve: 2026-11-19T15:25:41.319+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.729 event="end"
+serve: 2026-11-19T15:25:41.320+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.138 event="start"
+serve: 2026-11-19T15:25:41.320+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.430 event="end"
+serve: 2026-11-19T15:25:41.321+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.143 event="start"
+serve: 2026-11-19T15:25:41.321+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.368 event="end"
+serve: 2026-11-19T15:25:41.322+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.107 event="start"
+serve: 2026-11-19T15:25:41.322+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.284 event="end"
+serve: 2026-11-19T15:25:41.323+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.104 event="start"
+serve: 2026-11-19T15:25:41.323+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.210 event="end"
+..............................serve: 2026-11-19T15:25:41.676+00:00 method="POST" path="/api/attach" status=- size=0 duration_ms=0.138 event="start"
+serve: 2026-11-19T15:25:41.677+00:00 method="POST" path="/api/attach" status=200 size=78 duration_ms=0.732 event="end"
+serve: 2026-11-19T15:25:41.678+00:00 method="GET" path="/attachments/b463c43ea3ad493caf736fdc5e73a834.png" status=200 size=17 duration_ms=0.359 event="end"
+................serve: 2026-11-19T15:25:43.495+00:00 method="GET" path="/screenshots/1d97644cc8fcf07ee841f30ce8891f71e820c6afecaa75c6854d746846607c91" status=200 size=15 duration_ms=0.735 event="end"
+serve: 2026-11-19T15:25:43.497+00:00 method="GET" path="/screenshots/1d97644cc8fcf07ee841f30ce8891f71e820c6afecaa75c6854d746846607c91" status=404 size=23 duration_ms=0.621 event="end"
+...serve: 2026-11-19T15:25:43.543+00:00 method="GET" path="/?project=mahler" status=200 size=136779 duration_ms=3.172 event="end"
+serve: 2026-11-19T15:25:43.549+00:00 method="GET" path="/fragment?project=mahler&layout=phone&tab=history" status=200 size=1683 duration_ms=3.636 event="end"
+serve: 2026-11-19T15:25:43.552+00:00 method="GET" path="/api/state?project=mahler" status=200 size=27514 duration_ms=3.112 event="end"
+serve: 2026-11-19T15:25:43.556+00:00 method="GET" path="/fragment?project=" status=200 size=5199 duration_ms=1.956 event="end"
+serve: 2026-11-19T15:25:43.558+00:00 method="GET" path="/fragment?project=disabled" status=200 size=5199 duration_ms=1.769 event="end"
+serve: 2026-11-19T15:25:43.560+00:00 method="GET" path="/fragment?project=unknown" status=200 size=5199 duration_ms=1.734 event="end"
+................................serve: 2026-11-19T15:25:44.658+00:00 method="GET" path="/api/settings" status=200 size=4303 duration_ms=2.067 event="end"
+serve: 2026-11-19T15:25:44.659+00:00 method="POST" path="/api/settings" status=- size=0 duration_ms=0.058 event="start"
+serve: 2026-11-19T15:25:44.671+00:00 method="POST" path="/api/settings" status=200 size=4329 duration_ms=11.908 event="end"
+serve: 2026-11-19T15:25:44.675+00:00 method="GET" path="/api/settings" status=200 size=4303 duration_ms=1.997 event="end"
+...............................serve: 2026-11-19T15:25:47.130+00:00 method="GET" path="/api/run/abc/log" status=- size=0 duration_ms=0.287 event="code 404, message Not Found"
+serve: 2026-11-19T15:25:47.130+00:00 method="GET" path="/api/run/abc/log" status=404 size=455 duration_ms=0.511 event="end"
+..............................................serve: 2026-11-19T15:25:50.490+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.120 event="start"
+serve: 2026-11-19T15:25:50.490+00:00 method="POST" path="/api/chat" status=403 size=52 duration_ms=0.333 event="end"
+serve: 2026-11-19T15:25:50.491+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.091 event="start"
+serve: 2026-11-19T15:25:50.491+00:00 method="POST" path="/api/chat" status=403 size=57 duration_ms=0.217 event="end"
+serve: 2026-11-19T15:25:50.492+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.187 event="start"
+serve: 2026-11-19T15:25:50.492+00:00 method="POST" path="/api/chat" status=415 size=47 duration_ms=0.402 event="end"
+serve: 2026-11-19T15:25:50.493+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.080 event="start"
+serve: 2026-11-19T15:25:50.493+00:00 method="POST" path="/api/chat" status=403 size=83 duration_ms=0.198 event="end"
+serve: 2026-11-19T15:25:50.494+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.132 event="start"
+serve: 2026-11-19T15:25:50.494+00:00 method="POST" path="/api/chat" status=400 size=49 duration_ms=0.396 event="end"
+serve: 2026-11-19T15:25:50.495+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.210 event="start"
+serve: 2026-11-19T15:25:50.495+00:00 method="POST" path="/api/chat" status=400 size=49 duration_ms=0.407 event="end"
+serve: 2026-11-19T15:25:50.496+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.097 event="start"
+serve: 2026-11-19T15:25:50.496+00:00 method="POST" path="/api/chat" status=200 size=85 duration_ms=0.420 event="end"
+serve: 2026-11-19T15:25:50.497+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.071 event="start"
+serve: 2026-11-19T15:25:50.497+00:00 method="POST" path="/api/chat" status=400 size=69 duration_ms=0.266 event="end"
+serve: 2026-11-19T15:25:50.498+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.106 event="start"
+serve: 2026-11-19T15:25:50.498+00:00 method="POST" path="/api/chat" status=400 size=52 duration_ms=0.272 event="end"
+serve: 2026-11-19T15:25:50.499+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.209 event="start"
+serve: 2026-11-19T15:25:50.499+00:00 method="POST" path="/api/chat" status=400 size=58 duration_ms=0.645 event="end"
+serve: 2026-11-19T15:25:50.500+00:00 method="GET" path="/api/chat?project=mahler&session_id=b00891e45f37fce68585afb817d2bd5c" status=403 size=57 duration_ms=0.216 event="end"
+serve: 2026-11-19T15:25:50.501+00:00 method="GET" path="/api/chat?project=other&session_id=b00891e45f37fce68585afb817d2bd5c" status=400 size=42 duration_ms=0.710 event="end"
+..................................serve: code updated abc123 -> def456, restarting
+...................................serve: 2026-11-19T15:25:54.001+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.344 event="start"
+serve: 2026-11-19T15:25:54.169+00:00 method="POST" path="/api/pause" status=200 size=12 duration_ms=168.992 event="end"
+...................................history: could not index run 1: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmp99z6s05_', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+history: could not index run 2: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmp99z6s05_', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+........serve: 2026-11-19T15:26:07.973+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.097 event="start"
+serve: 2026-11-19T15:26:07.974+00:00 method="POST" path="/api/chat" status=200 size=85 duration_ms=0.398 event="end"
+serve: 2026-11-19T15:26:07.974+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.047 event="start"
+serve: 2026-11-19T15:26:07.974+00:00 method="POST" path="/api/chat" status=200 size=307 duration_ms=0.422 event="end"
+serve: 2026-11-19T15:26:07.975+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.043 event="start"
+serve: 2026-11-19T15:26:07.975+00:00 method="POST" path="/api/chat" status=200 size=307 duration_ms=0.307 event="end"
+serve: 2026-11-19T15:26:07.976+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.042 event="start"
+serve: 2026-11-19T15:26:07.976+00:00 method="POST" path="/api/chat" status=200 size=415 duration_ms=0.308 event="end"
+serve: 2026-11-19T15:26:07.976+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.120 event="start"
+serve: 2026-11-19T15:26:07.977+00:00 method="POST" path="/api/chat" status=200 size=415 duration_ms=0.339 event="end"
+serve: 2026-11-19T15:26:07.977+00:00 method="GET" path="/api/chat?project=mahler&session_id=e612c626bda7760729d11745a8858049" status=200 size=673 duration_ms=0.206 event="end"
+serve: 2026-11-19T15:26:07.978+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.039 event="start"
+serve: 2026-11-19T15:26:07.978+00:00 method="POST" path="/api/chat" status=200 size=85 duration_ms=0.198 event="end"
+serve: 2026-11-19T15:26:07.978+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.038 event="start"
+serve: 2026-11-19T15:26:07.978+00:00 method="POST" path="/api/chat" status=200 size=242 duration_ms=0.257 event="end"
+serve: 2026-11-19T15:26:07.979+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.037 event="start"
+serve: 2026-11-19T15:26:07.979+00:00 method="POST" path="/api/chat" status=200 size=242 duration_ms=0.226 event="end"
+serve: 2026-11-19T15:26:07.979+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.038 event="start"
+serve: 2026-11-19T15:26:07.980+00:00 method="POST" path="/api/chat" status=200 size=350 duration_ms=0.264 event="end"
+serve: 2026-11-19T15:26:07.980+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.039 event="start"
+serve: 2026-11-19T15:26:07.980+00:00 method="POST" path="/api/chat" status=200 size=350 duration_ms=0.282 event="end"
+serve: 2026-11-19T15:26:07.981+00:00 method="GET" path="/api/chat?project=mahler&session_id=f157dbb04765d693ef0edb09929d2c26" status=200 size=608 duration_ms=0.177 event="end"
+.........................................................................................................................................................................serve: 2026-11-19T15:26:14.319+00:00 method="GET" path="/api/settings" status=200 size=4303 duration_ms=1.988 event="end"
+serve: 2026-11-19T15:26:14.320+00:00 method="POST" path="/api/settings" status=- size=0 duration_ms=0.058 event="start"
+serve: 2026-11-19T15:26:14.325+00:00 method="POST" path="/api/settings" status=400 size=79 duration_ms=4.914 event="end"
+...................................................................................................................................................................................serve: 2026-11-19T15:26:24.478+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.478+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.479+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.479+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.479+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.479+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.480+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.480+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.480+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.480+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.481+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.481+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.481+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.481+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.482+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.482+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.482+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.483+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.483+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.483+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.483+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.484+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.484+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.484+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.484+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.485+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.485+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.485+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.485+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.486+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.486+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.486+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.486+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.487+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.487+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.487+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.487+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.487+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.488+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.488+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.488+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.488+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.489+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.489+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.489+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.489+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.489+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.490+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.490+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.490+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.490+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.490+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.491+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.491+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.491+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.491+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.492+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.492+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.492+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.492+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.493+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.493+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.493+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.493+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.493+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.493+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.494+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.494+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.494+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.494+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.495+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.495+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.495+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.495+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.495+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.496+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.496+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.496+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.496+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.496+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.497+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.497+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.497+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.497+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.498+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.498+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.498+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.498+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.499+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.499+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.499+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.500+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.500+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.500+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.500+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.501+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.501+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.501+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.501+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.502+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.502+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.502+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.502+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.503+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.503+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.503+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.503+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.504+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.504+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.504+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.504+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.505+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.505+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.505+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.505+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.506+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.506+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.506+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.506+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.507+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.507+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.507+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.507+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.507+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-11-19T15:26:24.508+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-11-19T15:26:24.508+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+.........history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: search failed: 'NoneType' object has no attribute 'con'
+history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: search failed: 'NoneType' object has no attribute 'con'
+..........................................................serve: 2026-11-19T15:27:08.626+00:00 method="GET" path="/?project=mahler" status=200 size=136779 duration_ms=2.819 event="end"
+serve: 2026-11-19T15:27:08.628+00:00 method="GET" path="/fragment?project=mahler&layout=desktop&view=backlog" status=200 size=6009 duration_ms=1.580 event="end"
+......history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+.....................................serve: 2026-11-19T15:27:09.545+00:00 method="GET" path="/?view=backlog" status=200 size=134014 duration_ms=4.097 event="end"
+serve: 2026-11-19T15:27:09.549+00:00 method="GET" path="/?view=backlog" status=200 size=134808 duration_ms=3.636 event="end"
+.......................................................................................................................................................serve: 2026-11-19T15:27:15.338+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.089 event="start"
+serve: 2026-11-19T15:27:15.338+00:00 method="POST" path="/api/client_log" status=403 size=57 duration_ms=0.216 event="end"
+serve: 2026-11-19T15:27:15.339+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.042 event="start"
+serve: 2026-11-19T15:27:15.339+00:00 method="POST" path="/api/client_log" status=415 size=47 duration_ms=0.100 event="end"
+serve: 2026-11-19T15:27:15.339+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.042 event="start"
+serve: 2026-11-19T15:27:15.339+00:00 method="POST" path="/api/client_log" status=403 size=52 duration_ms=0.105 event="end"
+serve: 2026-11-19T15:27:15.340+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.040 event="start"
+serve: 2026-11-19T15:27:15.340+00:00 method="POST" path="/api/client_log" status=403 size=83 duration_ms=0.106 event="end"
+.history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: search failed: 'NoneType' object has no attribute 'con'
+history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: search failed: 'NoneType' object has no attribute 'con'
+history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: search failed: 'NoneType' object has no attribute 'con'
+history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: search failed: 'NoneType' object has no attribute 'con'
+.......................................s............................................serve: 2026-11-19T15:28:13.191+00:00 method="GET" path="/api/state?range=last7" status=200 size=21618 duration_ms=3.245 event="end"
+serve: 2026-11-19T15:28:13.194+00:00 method="GET" path="/api/state?range=custom&start=2026-09-01&end=2026-09-12" status=200 size=21642 duration_ms=2.431 event="end"
+.......................................................serve: 2026-11-19T15:28:18.727+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.239 event="start"
+serve: 2026-11-19T15:28:18.728+00:00 method="POST" path="/api/pause" status=200 size=12 duration_ms=0.749 event="end"
+................................s..................................................................................................................serve: 2026-11-19T15:28:24.192+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.089 event="start"
+serve: 2026-11-19T15:28:24.193+00:00 method="POST" path="/api/chat" status=200 size=85 duration_ms=0.395 event="end"
+serve: 2026-11-19T15:28:24.193+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.101 event="start"
+serve: 2026-11-19T15:28:24.193+00:00 method="POST" path="/api/chat" status=413 size=40 duration_ms=0.159 event="end"
+serve: 2026-11-19T15:28:24.194+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.049 event="start"
+serve: 2026-11-19T15:28:24.194+00:00 method="POST" path="/api/chat" status=400 size=52 duration_ms=0.222 event="end"
+serve: 2026-11-19T15:28:24.194+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.108 event="start"
+serve: 2026-11-19T15:28:24.195+00:00 method="POST" path="/api/chat" status=400 size=42 duration_ms=0.356 event="end"
+.serve: 2026-11-19T15:28:24.222+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.073 event="start"
+serve: 2026-11-19T15:28:24.223+00:00 method="POST" path="/api/chat" status=200 size=85 duration_ms=0.341 event="end"
+serve: 2026-11-19T15:28:24.223+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.107 event="start"
+serve: 2026-11-19T15:28:24.224+00:00 method="POST" path="/api/chat" status=200 size=242 duration_ms=0.536 event="end"
+serve: 2026-11-19T15:28:24.224+00:00 method="POST" path="/api/chat" status=- size=0 duration_ms=0.089 event="start"
+serve: 2026-11-19T15:28:24.225+00:00 method="POST" path="/api/chat" status=200 size=324 duration_ms=0.403 event="end"
+.....................history: could not index run 2: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpe12mztok', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+.................................serve: 2026-11-19T15:28:28.014+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.090 event="start"
+serve: 2026-11-19T15:28:28.014+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.244 event="end"
+serve: 2026-11-19T15:28:28.015+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.065 event="start"
+serve: 2026-11-19T15:28:28.015+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.161 event="end"
+serve: 2026-11-19T15:28:28.015+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.040 event="start"
+serve: 2026-11-19T15:28:28.015+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.188 event="end"
+serve: 2026-11-19T15:28:28.016+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.131 event="start"
+serve: 2026-11-19T15:28:28.016+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.196 event="end"
+serve: 2026-11-19T15:28:28.016+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.048 event="start"
+serve: 2026-11-19T15:28:28.016+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.189 event="end"
+serve: 2026-11-19T15:28:28.017+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.072 event="start"
+serve: 2026-11-19T15:28:28.017+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.132 event="end"
+serve: 2026-11-19T15:28:28.017+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.053 event="start"
+serve: 2026-11-19T15:28:28.017+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.179 event="end"
+serve: 2026-11-19T15:28:28.018+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.082 event="start"
+serve: 2026-11-19T15:28:28.018+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.146 event="end"
+serve: 2026-11-19T15:28:28.018+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.061 event="start"
+serve: 2026-11-19T15:28:28.018+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.266 event="end"
+serve: 2026-11-19T15:28:28.018+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.045 event="start"
+serve: 2026-11-19T15:28:28.018+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.093 event="end"
+serve: 2026-11-19T15:28:28.019+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.043 event="start"
+serve: 2026-11-19T15:28:28.019+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.177 event="end"
+serve: 2026-11-19T15:28:28.019+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.050 event="start"
+serve: 2026-11-19T15:28:28.019+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.180 event="end"
+serve: 2026-11-19T15:28:28.020+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.048 event="start"
+serve: 2026-11-19T15:28:28.020+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.202 event="end"
+...............................................................serve: 2026-11-19T15:28:29.206+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.154 event="start"
+serve: 2026-11-19T15:28:29.206+00:00 method="POST" path="/api/pause" status=200 size=12 duration_ms=0.342 event="end"
+serve: 2026-11-19T15:28:29.206+00:00 method="POST" path="/api/resume" status=- size=0 duration_ms=0.049 event="start"
+serve: 2026-11-19T15:28:29.207+00:00 method="POST" path="/api/resume" status=200 size=12 duration_ms=0.233 event="end"
+....................serve: 2026-11-19T15:28:29.835+00:00 method="GET" path="/screenshots/0000000000000000000000000000000000000000000000000000000000000000" status=404 size=23 duration_ms=0.345 event="end"
+serve: 2026-11-19T15:28:29.836+00:00 method="GET" path="/screenshots/../config.toml" status=404 size=23 duration_ms=0.074 event="end"
+serve: 2026-11-19T15:28:29.836+00:00 method="GET" path="/screenshots/%2e%2e%2fconfig.toml" status=404 size=23 duration_ms=0.072 event="end"
+serve: 2026-11-19T15:28:29.836+00:00 method="GET" path="/screenshots/1d97644cc8fcf07ee841f30ce8891f71e820c6afecaa75c6854d746846607c91/0.png" status=404 size=23 duration_ms=0.079 event="end"
+serve: 2026-11-19T15:28:29.837+00:00 method="GET" path="/screenshots/1d97644cc8fcf07ee841f30ce8891f71e820c6afecaa75c6854d746846607c91%00" status=404 size=23 duration_ms=0.112 event="end"
+..........................................................................................................................................................................................................serve: 2026-11-19T15:28:40.553+00:00 method="GET" path="/api/releases/phish-in%2Fcouch-tour.json" status=200 size=118 duration_ms=0.367 event="end"
+....serve: 2026-11-19T15:28:40.669+00:00 method="GET" path="/fragment" status=200 size=5199 duration_ms=4.776 event="end"
+serve: 2026-11-19T15:28:40.672+00:00 method="GET" path="/api/state" status=200 size=21616 duration_ms=2.611 event="end"
+....................history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: search failed: 'NoneType' object has no attribute 'con'
+history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: search failed: 'NoneType' object has no attribute 'con'
+........history: note render failed: 'NoneType' object has no attribute 'run_notes'
+history: refresh failed: 'NoneType' object has no attribute 'con'
+history: search failed: 'NoneType' object has no attribute 'con'
+...........serve: 2026-11-19T15:28:42.496+00:00 method="GET" path="/attachments/../config.toml" status=- size=0 duration_ms=0.173 event="code 404, message Not Found"
+serve: 2026-11-19T15:28:42.496+00:00 method="GET" path="/attachments/../config.toml" status=404 size=455 duration_ms=0.427 event="end"
+.......serve: 2026-11-19T15:28:43.851+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.228 event="start"
+serve: 2026-11-19T15:28:43.851+00:00 method="POST" path="/api/pause" status=200 size=12 duration_ms=0.546 event="end"
+.......................................................................................serve: 2026-11-19T15:28:48.205+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.196 event="start"
+serve: 2026-11-19T15:28:48.205+00:00 method="POST" path="/api/pause" status=403 size=57 duration_ms=0.317 event="end"
+serve: 2026-11-19T15:28:48.206+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.056 event="start"
+serve: 2026-11-19T15:28:48.206+00:00 method="POST" path="/api/pause" status=403 size=52 duration_ms=0.161 event="end"
+serve: 2026-11-19T15:28:48.206+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.051 event="start"
+serve: 2026-11-19T15:28:48.206+00:00 method="POST" path="/api/pause" status=415 size=47 duration_ms=0.146 event="end"
+.........................................
+----------------------------------------------------------------------
+Ran 3782 tests in 342.218s
+
+OK (skipped=2)
+acme#10: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+peak override on — Claude runs allowed until 14:00 ET (in 4h 0m)
+Test console running at http://127.0.0.1:54054
+Launching agent on work-codex...
+
+Test console running at http://127.0.0.1:54126
+Launching agent on claude...
+
+p#7: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+mahler ship: couldn't record worktree for cleanup — git worktree list --porcelain: fatal: not a git repository (or any of the parent directories): .git
+x#5: PR #88 handed to the conductor — it watches CI and merges on green.
+acme#5: lesson lesson-a unavailable [destructive]: 'rm -rf'
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmp6xxui4bm/repo/.claude
+mahler ship: couldn't record worktree for cleanup — git worktree list --porcelain: fatal: not a git repository (or any of the parent directories): .git
+x#5: PR #88 handed to the conductor — it watches CI and merges on green.
+mahler console: http://127.0.0.1:0/ (Ctrl-C to stop)
+mahler ship: couldn't record worktree for cleanup — git worktree list --porcelain: fatal: not a git repository (or any of the parent directories): .git
+x#5: PR #88 handed to the conductor — it watches CI and merges on green.
+acme#1144: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+mahler#157: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+myproj#99: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpwhpr5ldu/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmplrav36ib/repo/.claude
+mahler ship: couldn't record worktree for cleanup — git worktree list --porcelain: fatal: not a git repository (or any of the parent directories): .git
+x#5: PR #88 handed to the conductor — it watches CI and merges on green.
+unknown platform nope
+p#7: warning: non-App project using transitional GitHub identity (migration tracked in #1145)
