@@ -37,6 +37,41 @@ class LeaseTests(unittest.TestCase):
         return {"enabled": True, "post_merge": {
             **config.DEFAULT_POST_MERGE, "enabled": True, "live_command": "./live"}}
 
+    def test_post_merge_live_reopen_is_scoped_audited_and_one_time(self):
+        sha = "a" * 40
+        for number, phase, status in ((1, "live", "FAIL"), (2, "deploy", "FAIL"),
+                                      (3, "smoke", "FAIL"), (4, "live", "pending"),
+                                      (5, "smoke", "PASS")):
+            self.led.create_post_merge_check("p", number, sha, self.post_merge_policy())
+            if phase != "deploy":
+                self.led.update_post_merge_check("p", number, sha,
+                    expected_phase="deploy", phase="live")
+            if phase == "smoke":
+                self.led.update_post_merge_check("p", number, sha,
+                    expected_phase="live", phase="smoke", live_sha=sha)
+            self.led.update_post_merge_check("p", number, sha,
+                expected_phase=phase, phase=phase, status=status,
+                failure_code="timeout" if status == "FAIL" else "",
+                evidence_ref="report" if status == "PASS" else "")
+        before = dict(self.led.post_merge_check("p", 1, sha))
+        self.clock.advance(days=1)
+        self.assertFalse(self.led.reopen_post_merge_live("other", 1, sha))
+        for number in (2, 3, 4, 5):
+            self.assertFalse(self.led.reopen_post_merge_live("p", number, sha))
+        self.assertTrue(self.led.reopen_post_merge_live("p", 1, sha))
+        row = self.led.post_merge_check("p", 1, sha)
+        self.assertEqual((row["status"], row["phase"]), ("pending", "live"))
+        self.assertEqual(row["deadline_at"], iso(self.clock() + timedelta(
+            seconds=self.post_merge_policy()["post_merge"]["timeout_seconds"])))
+        self.assertIsNone(row["finished_at"])
+        self.assertEqual(row["failure_code"], "")
+        self.assertEqual(row["created_at"], before["created_at"])
+        event = self.led.q1("SELECT detail FROM events WHERE kind='post_merge_live_reopened'")
+        self.assertEqual(json.loads(event["detail"])["previous"], before)
+        self.led.update_post_merge_check("p", 1, sha, expected_phase="live",
+            phase="live", status="FAIL", failure_code="timeout")
+        self.assertFalse(self.led.reopen_post_merge_live("p", 1, sha))
+
     def test_post_merge_strategy_deadlines(self):
         for number, (strategy, timeout, expected) in enumerate((
             ("mahler", 1800, 3600), ("mahler", 7200, 7200), ("github", 1800, 1800)
