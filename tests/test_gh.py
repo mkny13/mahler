@@ -236,6 +236,8 @@ class TestGH(unittest.TestCase):
             ([deployment], [success, {**success, "id": 201, "state": "pending"}], None),
             ([deployment], [{**success, "id": 199, "state": "pending"}, success], success["environment_url"]),
             ([deployment], [], None),
+            ([{**deployment, "id": "100"}], [success], None),
+            ([deployment], [{**success, "id": "200"}], None),
             ([deployment] * 100, [success], None),
             ([deployment], [success] * 100, None),
             ([deployment, *[{**deployment, "id": 100 - i, "sha": f"{i:040x}"} for i in range(1, 100)]], [success], success["environment_url"]),
@@ -259,6 +261,20 @@ class TestGH(unittest.TestCase):
         self.assertIn("repos/mkny13/mahler/deployments?environment=Preview", calls[0].args[-1])
         self.assertNotIn("sha=", calls[0].args[-1])
         self.assertTrue(all(c.kwargs["timeout"] == 2 for c in calls))
+        # Production uses the same identity, freshness, health and URL gates.
+        for environment in ("prod", "Production"):
+            for deployments, statuses, expected in cases:
+                def retarget(rows):
+                    return [{**row, "environment": environment}
+                            if row.get("environment") == "Preview" else row
+                            for row in rows]
+                if any(row.get("production_environment") is True for row in deployments):
+                    expected = success["environment_url"]
+                with self.subTest(environment=environment, deployments=deployments,
+                                  statuses=statuses):
+                    self.gh._gh.side_effect = [json.dumps(retarget(deployments)),
+                                              json.dumps(retarget(statuses))]
+                    self.assertEqual(self.gh.exact_preview(sha, environment), expected)
         self.gh._gh.reset_mock()
         for environment in ("Production", "production", "PROD"):
             prod = {**deployment, "environment": environment, "production_environment": False}
@@ -275,6 +291,16 @@ class TestGH(unittest.TestCase):
                     self.gh._gh.side_effect = [json.dumps(deployments), json.dumps([status])]
                     self.assertEqual(self.gh.exact_preview(sha, environment), expected)
                     self.assertNotIn("sha=", self.gh._gh.call_args_list[0].args[-1])
+
+    def test_exact_preview_documented_production_policy(self):
+        # Keep the superseding #746 criterion visible in both operator/design docs.
+        policy = ("Explicitly configured `prod`/`production` targets are valid; "
+                  "other environments require `production_environment = false`.")
+        root = Path(__file__).resolve().parents[1]
+        for name in ("DESIGN.md", "docs/post-merge-validation.md"):
+            with self.subTest(document=name):
+                document = " ".join((root / name).read_text().split())
+                self.assertTrue(policy in document, f"{name}: missing exact-Production policy")
 
     def test_exact_preview_rejection_reasons(self):
         deployment = {"id": 100, "sha": "a" * 40, "environment": "Preview",

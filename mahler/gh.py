@@ -836,6 +836,9 @@ class GH:
     def exact_preview(self, sha, environment, *, timeout=5, return_reason=False):
         """Two bounded lookups; incomplete/ambiguous observations never prove live.
 
+        Explicit prod/production targets are supported (#1287, owner #1604),
+        regardless of Vercel's production_environment flag. Other environments
+        require that flag to be exactly False; Production is never a fallback.
         Do not filter the first lookup by SHA: that hides a newer deployment.
         """
         from urllib.parse import urlencode, urlsplit

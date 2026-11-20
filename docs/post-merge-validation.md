@@ -1,8 +1,31 @@
 # Post-merge validation
 
 Mahler can validate a shipped merge against the exact commit that was merged.
-This page records the bounded contract for `phish-in/couch-tour`; it is an
-operator configuration template, not an activation of the check.
+This page records the GitHub detector policy and the bounded contract template
+for `phish-in/couch-tour`; it does not activate or change any configuration.
+
+## Exact GitHub environment policy (#746, #1287, #1604)
+
+Explicitly configured `prod`/`production` targets are valid;
+other environments require `production_environment = false`.
+Production names are recognized case-insensitively, but deployment and status
+records must match the configured environment exactly. For configured Production,
+the detector does not constrain `production_environment`: Vercel can report false
+even for a Production deployment. Groundwork relies on this exact-Production support.
+
+The owner reaffirmed #1287's policy in #1604, superseding #746's blanket rejection
+of production-only targets. The reconciled criterion is: Mahler and GitHub live
+detectors reject stale and ambiguous targets; GitHub accepts explicitly configured
+Production and rejects production-marked deployments for non-production targets.
+Mahler's own identity rules remain documented in DESIGN.md.
+
+Every GitHub target still requires exactly one merge-SHA deployment, newest in
+the configured environment, and one unambiguous newest successful status. Missing,
+stale, duplicate, newer competing, malformed or unhealthy observations fail closed.
+The HTTPS URL must have no credentials, query string or fragment. Production is
+never a fallback for a missing Preview deployment. Tests in
+`tests/test_gh.py` exercise these gates for Preview and Production and check that
+both this document and DESIGN.md retain the explicit Production policy.
 
 ## phish-in/couch-tour contract
 
@@ -10,8 +33,8 @@ This project uses the GitHub exact-SHA preview strategy:
 
 - Mahler asks GitHub for the successful deployment of the merge commit's full
   SHA in the exact environment named by `environment`.
-- The environment is `Preview`, the non-production GitHub environment. Never
-  point this contract at `Production` or another production environment.
+- This Couch Tour template selects `Preview`, the non-production GitHub
+  environment. It does not change Groundwork's configured Production target.
 - After the preview is available, Mahler runs the project's `[projects.phish-in]
   smoke` command. The command must run the Couch Tour smoke machinery from
   [couch-tour#357](https://github.com/mkny13/couch-tour/issues/357) and produce
