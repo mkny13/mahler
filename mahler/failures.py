@@ -180,14 +180,20 @@ def workflow_key(project, workflow, failure_code="actions_failed"):
 
 
 def tracks_workflow(item, workflow, branch):
-    """Match explicit run evidence or a named default-branch failure, not a mention."""
+    """Match explicit run evidence or a named default-branch failure."""
     text = "\n".join(str(row_get(item, k, "") or "")
                      for k in ("title", "issue_body", "question"))
     url = workflow.get("html_url")
     if url and url in text:
         return True
+    run_id = workflow.get("id")
+    if run_id is not None and re.search(r"(?<!\d)" + re.escape(str(run_id)) + r"(?!\d)",
+                                        text):
+        return True
     name = workflow.get("name")
-    return bool(name and re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", text, re.I)
+    name_words = set(re.findall(r"\w+", str(name or "").casefold()))
+    text_words = set(re.findall(r"\w+", text.casefold()))
+    return bool(name_words and name_words <= text_words
                 and re.search(r"\b" + re.escape(branch) + r"\b", text, re.I)
                 and re.search(r"\b(fail(?:s|ed|ure|ing)?|red|timed.out|blocked)\b", text, re.I))
 
