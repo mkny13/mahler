@@ -78,9 +78,33 @@ class VerifyFallbackTests(unittest.TestCase):
                 mock.patch.object(runner, "snapshot", return_value=saved), \
                 mock.patch.object(runner, "remove_worktree"), \
                 mock.patch.object(runner, "commits_ahead", return_value=commits), \
-                mock.patch.object(runner, "verify_in_worktree", return_value=verify_ok), \
+                mock.patch.object(runner, "start_verify_in_worktree", return_value={"pid": None}), \
+                mock.patch.object(runner, "poll_verify_in_worktree", return_value=verify_ok), \
                 mock.patch.object(self.ctx, "ping"):
             finalize.finalize(self.ctx, self.run)
+            if self.led.get_kv(f"fallback_verify:{self.run_id}"):
+                finalize.finalize(self.ctx, self.run)
+
+    def test_slow_verify_returns_before_pass_budget(self):
+        self._write_log_no_status()
+        self.cfg["projects"]["x"].update(verify="sleep 5", verify_timeout=1)
+        saved = {"ref": "mahler/5-x", "sha": "abc", "ahead": 1, "stat": None}
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=saved), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "commits_ahead", return_value=1):
+            completed = []
+            def action():
+                finalize.finalize(self.ctx, self.run)
+                completed.append(True)
+            scheduler.run_pass(self.ctx, "watchdog", action, budget=.2, reap=False)
+            try:
+                self.assertEqual(completed, [True])
+                self.assertEqual(self.led.item("x", 5)["state"], "working")
+                self.assertIsNotNone(self.led.get_kv(f"fallback_verify:{self.run_id}"))
+            finally:
+                if hasattr(finalize, "cancel_fallback_verify"):
+                    finalize.cancel_fallback_verify(self.ctx, self.run)
 
     def last_event(self):
         rows = self.led.q("SELECT detail FROM events WHERE project='x' AND number=5 "
@@ -422,7 +446,7 @@ class ClineNudgeTests(unittest.TestCase):
                                                 "sha": "abc", "ahead": 2, "stat": None}), \
                 mock.patch.object(runner, "remove_worktree"), \
                 mock.patch.object(runner, "commits_ahead", return_value=2), \
-                mock.patch.object(runner, "verify_in_worktree", return_value=True), \
+                mock.patch.object(finalize, "_try_verify_fallback", return_value=True), \
                 mock.patch.object(self.ctx, "ping"):
             finalize.finalize(self.ctx, self.run)
         item = self.led.item("x", 5)

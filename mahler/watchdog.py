@@ -11,7 +11,7 @@ import json
 from datetime import timedelta
 
 from . import config, platforms, router, runner
-from .finalize import finalize
+from .finalize import finalize, cancel_fallback_verify
 from .ledger import iso, parse
 from .usage import record_claude_usage
 
@@ -34,6 +34,24 @@ def watchdog(ctx):
 def _watch_one(ctx, run, now):
     led = ctx.led
     pol = ctx.policy(run["project"])
+    if led.get_kv(f"fallback_verify:{run['id']}"):
+        if ctx.dry_run:
+            return
+        ours = led.heartbeat(run["project"], run["number"], f"run:{run['id']}",
+                             run["epoch"], pol["auto_lease_minutes"])
+        record = json.loads(led.get_kv(f"fallback_verify:{run['id']}"))
+        if (not ours or run["yield_at"] != record.get("yield_at")
+                or run["stop_reason"] != record.get("stop_reason")
+                or run["status"] == "stopping" and record.get("status") != "stopping"):
+            cancel_fallback_verify(ctx, run)
+        else:
+            result = runner.poll_verify_in_worktree(record)
+            if result is None and now.timestamp() < record["deadline"]:
+                return
+            if result is not True:
+                cancel_fallback_verify(ctx, run)
+        finalize(ctx, run)
+        return
     # A crash can leave the initial row without the launch result. Give an
     # in-progress launch its normal startup grace, then reclaim its slot.
     incomplete = any(key in run.keys() and not run[key]
@@ -165,6 +183,7 @@ def stop(ctx, run, reason):
     ctx.say(f"{run['project']}#{run['number']}: stopping run {run['id']} ({reason})")
     if ctx.dry_run:
         return
+    cancel_fallback_verify(ctx, run)
     ctx.led.update_run(run["id"], status="stopping", stop_reason=reason)
     runner.terminate(run["pid"])
     runner.reap_run(run["id"])

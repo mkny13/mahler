@@ -897,7 +897,8 @@ def _ended_unconfirmed(e):
     if e.verify_green:
         _apply_verify_fallback(e)
         return True                             # handled — state set to verifying
-    if e.reason is None and _try_cline_nudge(e.ctx, e.run, e.kind, e.log, e.pol):
+    if (not e.ctx.led.get_kv(f"verify_failed:{e.run['id']}") and e.reason is None
+            and _try_cline_nudge(e.ctx, e.run, e.kind, e.log, e.pol)):
         return False                            # alive again — finalized when it ends
     if e.ctx.led.get_kv(f"verify_failed:{e.run['id']}"):
         e.reason = "verify_failed"
@@ -1107,6 +1108,7 @@ def _save_work(e):
 def _close_the_books(e, code):
     """The lease, the run row and the worktree, once the ending is decided."""
     ctx, led, run = e.ctx, e.led, e.run
+    cancel_fallback_verify(ctx, run)
     # Keep item ownership and fencing through the handoff, but release run
     # capacity immediately. Watching a PR does not execute a run (D19, D24).
     # On transport failure the old lease is left to expire.
@@ -1348,6 +1350,11 @@ def finalize(ctx, run):
             handler = next((handle for matches, handle in ENDINGS if matches(ending)), _retry)
             if handler is _ended_unconfirmed and not log.get("gateway_failed"):
                 ending.verify_green = _try_verify_fallback(ctx, run, pol, ending.saved, item, log, code)
+                if ending.verify_green is None:
+                    _mark_stale(ending)
+                    if not ending.stale:
+                        return              # watchdog polls on the next tick
+                    cancel_fallback_verify(ctx, run)
 
     # Claim uses BEGIN IMMEDIATE too: checking the epoch and applying the
     # outcome in one transaction prevents a claim between the check and any
@@ -1545,9 +1552,23 @@ def _try_verify_fallback(ctx, run, pol, saved, item, log=None, code=0):
     """D18 verify-green fallback: no STATUS line, but if the branch has commits
     ahead of base (or uncommitted changes in saved snapshot) *and* the project's
     verify command passes in the worktree, treat as DONE. Returns True if the
-    fallback can be applied after rechecking the epoch."""
+    fallback can be applied after rechecking the epoch; None while pending."""
     led = ctx.led
     project, n = run["project"], run["number"]
+    key = f"fallback_verify:{run['id']}"
+    if led.get_kv(f"verify_failed:{run['id']}"):
+        return False
+    record = json.loads(led.get_kv(key) or "null")
+    if record is not None:
+        ok = runner.poll_verify_in_worktree(record)
+        if ok is None and led.now().timestamp() < record["deadline"]:
+            return None
+        if ok is not True:
+            cancel_fallback_verify(ctx, run)
+            return False
+        record["ok"] = True
+        led.set_kv(key, json.dumps(record))
+        return bool((saved["ref"] if saved else None) or item["branch"])
     base = pol.get("base", "main")
     verify_cmd = pol.get("verify")
     if not verify_cmd:
@@ -1561,15 +1582,36 @@ def _try_verify_fallback(ctx, run, pol, saved, item, log=None, code=0):
     if ahead == 0:
         ctx.say(f"{project}#{n}: no STATUS line, no commits ahead of {base} — failed attempt")
         return False
-    ctx.say(f"{project}#{n}: no STATUS line but {ahead} commit(s) ahead — running verify")
-    ok = runner.verify_in_worktree(run["worktree"], verify_cmd,
-                                   timeout=pol.get("verify_timeout", 120),
-                                   output_path=os.path.join(os.path.dirname(run["log_path"]), "verify.log"))
-    if not ok:
-        led.set_kv(f"verify_failed:{run['id']}", "1")
-        ctx.say(f"{project}#{n}: verify failed in worktree — failed attempt")
+    ctx.say(f"{project}#{n}: no STATUS line but {ahead} commit(s) ahead — starting verify")
+    timeout = pol.get("verify_timeout", 300)
+    record = {"deadline": led.now().timestamp() + timeout,
+              "status": dict(run).get("status"),
+              "yield_at": dict(run).get("yield_at"),
+              "stop_reason": run["stop_reason"]}
+    # Reserve before launching. An interrupted launch is failed, never retried.
+    led.set_kv(key, json.dumps(record))
+    try:
+        record.update(runner.start_verify_in_worktree(
+            run["worktree"], verify_cmd, timeout=timeout,
+            output_path=os.path.join(os.path.dirname(run["log_path"]), "verify.log")))
+        led.set_kv(key, json.dumps(record))
+    except BaseException as exc:
+        cancel_fallback_verify(ctx, run, record)
+        if not isinstance(exc, Exception):
+            raise
         return False
-    return bool((saved["ref"] if saved else None) or item["branch"])
+    return None
+
+
+def cancel_fallback_verify(ctx, run, record=None):
+    """Stop verification before closing, cancelling or losing ownership of a run."""
+    key = f"fallback_verify:{run['id']}"
+    record = record or json.loads(ctx.led.get_kv(key) or "null")
+    if record is not None:
+        if not record.get("ok"):
+            ctx.led.set_kv(f"verify_failed:{run['id']}", "1")
+        runner.stop_verify_in_worktree(record)
+        ctx.led.set_kv(key, None)
 
 
 def _apply_verify_fallback(e):
