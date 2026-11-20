@@ -503,7 +503,7 @@ class SwiftGradleTests(unittest.TestCase):
 
         def open_request(request, timeout):
             url = request.full_url
-            if url.startswith("https://dl.google.com/"):
+            if url.endswith("maven-metadata.xml") or url.startswith("https://dl.google.com/"):
                 raise HTTPError(url, 404, "not found", None, None)
             if broken and broken in url:
                 raise URLError("offline")
@@ -821,6 +821,8 @@ class GradleCatalogTests(unittest.TestCase):
     def google_opener(self, *, bad=None, vulnerable=False):
         def opener(request, timeout):
             url = request.full_url
+            if url.startswith(("https://repo1.maven.org/", "https://plugins.gradle.org/")):
+                raise HTTPError(url, 404, "not found", None, None)
             if "search.maven.org" in url:
                 return Response({"response": {"numFound": 0, "docs": []}})
             if url.endswith("maven-metadata.xml"):
@@ -860,6 +862,88 @@ class GradleCatalogTests(unittest.TestCase):
         for bad in ("<metadata/>", "<broken", '<!DOCTYPE x><metadata/>'):
             with self.assertRaises(vetting.VettingError):
                 vetting.vet({}, self.files(), now=NOW, opener=self.google_opener(bad=bad))
+
+
+class MavenRepositoryTests(unittest.TestCase):
+    def fixture(self, *, portal=False, missing=False, metadata=None, date="Wed, 01 Jan 2020 00:00:00 GMT",
+                indexed_old=False, marker=False):
+        group = "com.google.devtools.ksp" if marker else "org.example"
+        artifact = "com.google.devtools.ksp.gradle.plugin" if marker else "demo"
+        version = "2.3.14" if marker else "1.2.3"
+        files = {"gradle.lockfile": f"{group}:{artifact}:{version}=runtimeClasspath\n"}
+        base = "https://plugins.gradle.org/m2/" if portal else "https://repo1.maven.org/maven2/"
+        calls = []
+        def opener(request, timeout):
+            url = request.full_url
+            calls.append((url, request.get_method()))
+            if "search.maven.org" in url:
+                docs = ([{"g": group, "a": artifact, "v": "1.0.0", "timestamp": 1577836800000}]
+                        if indexed_old else [])
+                return Response({"response": {"numFound": len(docs), "docs": docs}})
+            if "api.osv.dev" in url:
+                return Response({})
+            if missing or not url.startswith(base):
+                raise HTTPError(url, 404, "not found", None, None)
+            if url.endswith("maven-metadata.xml"):
+                return Response(metadata if metadata is not None else
+                    f"<metadata><groupId>{group}</groupId><artifactId>{artifact}</artifactId>"
+                    f"<versioning><versions><version>{version}</version></versions>"
+                    "</versioning></metadata>", raw=True)
+            if request.get_method() == "HEAD":
+                response = Response("")
+                response.headers = {"Last-Modified": date}
+                return response
+            if url.endswith(".pom"):
+                return Response(f"<project><groupId>{group}</groupId><artifactId>{artifact}</artifactId>"
+                                f"<version>{version}</version></project>", raw=True)
+            raise AssertionError(url)
+        return files, opener, calls, base
+
+    def test_unindexed_central_and_portal_versions(self):
+        for options in ({}, {"indexed_old": True}, {"marker": True},
+                        {"portal": True, "marker": True}):
+            with self.subTest(options=options):
+                files, opener, calls, base = self.fixture(**options)
+                findings, reason = vetting.vet({}, files, now=NOW, opener=opener)
+                self.assertIsNone(reason)
+                self.assertIn("2020-01-01", findings[0].first_published)
+                self.assertTrue(findings[0].source.startswith(base))
+                repository = "Gradle Plugin Portal" if options.get("portal") else "Maven Central"
+                self.assertIn(repository, findings[0].publisher)
+                self.assertTrue(any(url.startswith(base) and method == "HEAD" for url, method in calls))
+
+    def test_missing_or_invalid_repository_evidence_blocks(self):
+        for options in ({"missing": True}, {"metadata": "<broken"},
+                        {"metadata": "<metadata/>"}, {"date": ""},
+                        {"metadata": '<!DOCTYPE x><metadata/>'},
+                        {"metadata": "<metadata><groupId>other</groupId><artifactId>demo</artifactId>"
+                         "<versioning><versions><version>1.2.3</version></versions></versioning></metadata>"},
+                        {"metadata": "<metadata><groupId>org.example</groupId><artifactId>demo</artifactId>"
+                         "<versioning><versions><version>1.2.2</version></versions></versioning></metadata>"}):
+            with self.subTest(options=options):
+                files, opener, _, _ = self.fixture(**options)
+                with self.assertRaises(vetting.VettingError):
+                    vetting.vet({}, files, now=NOW, opener=opener)
+
+    def test_transport_retry_recovers_and_is_bounded_at_each_request_kind(self):
+        for target in ("search.maven.org", "maven-metadata.xml", ".pom"):
+            for recover in (True, False):
+                with self.subTest(target=target, recover=recover):
+                    files, clean, _, _ = self.fixture()
+                    attempts = []
+                    def opener(request, timeout):
+                        if target in request.full_url and (target != ".pom" or request.get_method() == "HEAD"):
+                            attempts.append(request.full_url)
+                            if not recover or len(attempts) == 1:
+                                raise TimeoutError("registry timed out")
+                        return clean(request, timeout)
+                    if recover:
+                        _, reason = vetting.vet({}, files, now=NOW, opener=opener)
+                        self.assertIsNone(reason)
+                    else:
+                        with self.assertRaises(vetting.VettingError):
+                            vetting.vet({}, files, now=NOW, opener=opener)
+                    self.assertEqual(len(attempts), 2)
 
 
 ECOSYSTEM_FILES = {"npm": npm_files, "pypi": python_files,
