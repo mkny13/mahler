@@ -15,7 +15,7 @@ class PostMergeContractDocumentationTests(unittest.TestCase):
         self.assertIn("#748 merge `c70a0d88fe4dbbc5e93f573d995244357009bc40`", text)
         self.assertIn("after #741 audit commit `b6ae20e1fccaf91973c1b049552f4d74371deb51`", text)
         self.assertIn("Mahler: PASS", text)
-        self.assertIn("Groundwork: PASS (target: Production)", text)
+        self.assertRegex(text, r"Groundwork: PASS \(target:\s+Production\)")
         self.assertIn("exactly one of Groundwork/Couch Tour", text)
 
     def test_phish_in_snippet_is_valid_toml_and_bounded(self):
