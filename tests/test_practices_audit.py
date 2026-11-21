@@ -169,6 +169,43 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertLess(len(detail), 50_000)
         self.assertIn("260 additional evidence entries omitted", detail)
 
+    def test_current_ci_workflow_proves_direct_tests(self):
+        # Frozen fixture: later workflow changes must not weaken this regression.
+        workflow = 'name: ci\non:\n  pull_request:\n  merge_group:\n  push:\n    branches: [main]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          fetch-depth: 0\n      - uses: actions/setup-python@v7\n        with:\n          python-version: "3.14"\n      - run: python -m mahler.repo_guard\n      - name: Lesson consolidation gate\n        env:\n          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}\n          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.event.after }}\n        run: |\n          if echo "$BASE_SHA" | grep -qE \'^0+$\'; then\n            BASE_SHA="$(git hash-object -t tree /dev/null)"\n          fi\n          python -m mahler.consolidation_gate --base "$BASE_SHA" --head "$HEAD_SHA"\n      - run: python -m unittest discover -s tests -v\n      - run: python tests/run_random.py\n      - run: python -X dev tests/run_strict.py\n'
+        self.write(".github/workflows/ci.yml", workflow)
+        findings = self.results()
+        self.assertEqual(findings["ci-tests"].state, "pass")
+        self.assertIn(".github/workflows/ci.yml:27 job=test run: "
+                      "python -m unittest discover -s tests -v",
+                      findings["ci-tests"].evidence)
+        self.assertEqual(findings["verify-command"].state, "unknown")
+
+    def test_direct_test_and_additional_execution_matrix(self):
+        for trigger, extra in (
+            ("  pull_request:\n  push:\n    branches: [main]", ""),
+            ("  pull_request:", "      - run: python tests/opaque.py\n"),
+        ):
+            with self.subTest(trigger=trigger, extra=extra):
+                self.write(".github/workflows/ci.yml",
+                           WORKFLOW.replace("  pull_request:", trigger) + extra)
+                self.write("tests/opaque.py", "raise RuntimeError('never execute')\n")
+                findings = self.results()
+                self.assertEqual(findings["ci-tests"].state, "pass")
+                self.assertTrue(any("job=test run: python3 -m unittest discover -s tests"
+                                    in e for e in findings["ci-tests"].evidence))
+
+    def test_opaque_execution_retains_other_checks_uncertainty(self):
+        self.write(".github/workflows/ci.yml",
+                   WORKFLOW + "      - run: python tests/opaque.py\n")
+        self.write("tests/opaque.py", "import unittest\nunittest.main()\n")
+        self.pol["verify"] = "python3 -m pytest"
+        self.write(".mahler/project.toml", '[verify]\nfast = "python3 -m pytest"\n')
+        self.gh.protection["required_status_checks"]["contexts"] = ["unresolved"]
+        findings = self.results()
+        self.assertEqual(findings["ci-tests"].state, "pass")
+        self.assertEqual(findings["verify-command"].state, "unknown")
+        self.assertEqual(findings["branch-protection"].state, "unknown")
+
     def test_build_only_is_not_test_coverage(self):
         self.write(".github/workflows/ci.yml", WORKFLOW.replace(
             "python3 -m unittest discover -s tests", "npm run build"))
@@ -241,7 +278,7 @@ class TestPracticesAudit(unittest.TestCase):
                 self.write(".github/workflows/ci.yml", workflow)
                 self.assertEqual(self.results()["ci-tests"].state, "unknown")
 
-    def test_pr_paths_filters_pass(self):
+    def test_pr_paths_filters_remain_unknown(self):
         for key, value in (
             ("paths", '["**.py"]'),
             ("paths-ignore", '["docs/**"]'),
@@ -253,9 +290,9 @@ class TestPracticesAudit(unittest.TestCase):
                 self.write(".github/workflows/ci.yml", workflow)
                 tree = audit._Tree(self.temp.name)
                 rows, unknown, jobs, struct = audit._workflow(tree, ".github/workflows/ci.yml")
-                self.assertFalse(unknown)
-                self.assertFalse(struct)
-                self.assertEqual(self.results()["ci-tests"].state, "pass")
+                self.assertTrue(unknown)
+                self.assertTrue(struct)
+                self.assertEqual(self.results()["ci-tests"].state, "unknown")
 
     def test_workflow_concurrency_expression_passes(self):
         workflow = (
