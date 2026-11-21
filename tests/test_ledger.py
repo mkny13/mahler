@@ -82,6 +82,21 @@ class LeaseTests(unittest.TestCase):
                 row = self.led.create_post_merge_check("p", number, "a" * 40, policy)
                 self.assertEqual(row["deadline_at"], iso(self.clock() + timedelta(seconds=expected)))
 
+    def test_self_update_deferral_is_fenced_and_once_only(self):
+        sha = "a" * 40
+        self.led.create_post_merge_check("p", 1, sha, self.post_merge_policy())
+        self.assertFalse(self.led.defer_post_merge_self_update("p", 1, sha))
+        self.led.update_post_merge_check("p", 1, sha, expected_phase="deploy", phase="live")
+        self.assertFalse(self.led.defer_post_merge_self_update("p", 1, sha))
+        self.clock.advance(seconds=1801)
+        self.assertTrue(self.led.defer_post_merge_self_update("p", 1, sha))
+        deferred = self.led.post_merge_check("p", 1, sha)
+        self.assertEqual(deferred["deadline_at"], iso(self.clock() + timedelta(seconds=1800)))
+        self.assertEqual(deferred["summary"], "awaiting daemon self-update")
+        self.clock.advance(seconds=1801)
+        self.assertFalse(self.led.defer_post_merge_self_update("p", 1, sha))
+        self.assertEqual(self.led.post_merge_check("p", 1, sha)["deadline_at"], deferred["deadline_at"])
+
     def test_post_merge_disabled_and_exact_identity(self):
         sha = "a" * 40
         for policy in ({}, {"enabled": True},

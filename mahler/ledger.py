@@ -794,6 +794,26 @@ class Ledger:
                         "deadline_at": iso(now + budget)})
             return True
 
+    def defer_post_merge_self_update(self, project, number, merge_sha):
+        """Grant one additional observation window to a proven older daemon."""
+        key = f"post-merge-self-update-deferred:{project}:{number}:{merge_sha}"
+        with self._tx():
+            row = self.post_merge_check(project, number, merge_sha)
+            now = self.now()
+            if (not row or row["status"] != "pending" or row["phase"] != "live"
+                    or now < parse(row["deadline_at"]) or self.get_kv(key)):
+                return False
+            budget = parse(row["deadline_at"]) - parse(row["created_at"])
+            deadline = iso(now + budget)
+            self.con.execute(
+                "UPDATE post_merge_checks SET deadline_at=?,updated_at=?,summary=? "
+                "WHERE project=? AND number=? AND merge_sha=?",
+                (deadline, iso(now), "awaiting daemon self-update", project, number, merge_sha))
+            self.set_kv(key, iso(now))
+            self.event("post_merge_self_update_deferred", project, number,
+                       {"merge_sha": merge_sha, "deadline_at": deadline})
+            return True
+
     def update_post_merge_check(self, project, number, merge_sha, *, expected_phase,
                                 phase, status="pending", live_sha=None,
                                 artifact_ref=None, summary="", evidence_ref="",

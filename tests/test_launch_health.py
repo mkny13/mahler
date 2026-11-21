@@ -92,6 +92,7 @@ class LaunchHealthTests(unittest.TestCase):
             with patch.object(launch_health.subprocess, "run") as run:
                 run.side_effect = ([Mock(returncode=0, stdout=live)]
                                    + ([Mock(returncode=contains)] if contains is not None else [])
+                                   + ([Mock(returncode=1)] if contains == 1 else [])
                                    + [Mock(returncode=0)])
                 self.assertEqual(launch_health.exact_live(requested), expected)
                 if contains is not None:
@@ -111,6 +112,20 @@ class LaunchHealthTests(unittest.TestCase):
                 marker.write_text(malformed)
                 self.assertIsNone(launch_health.exact_live("a" * 40))
                 run.assert_not_called()
+
+    def test_exact_live_defers_only_for_healthy_proven_ancestor(self):
+        proven, merge = "a" * 40, "b" * 40
+        marker = Path(self.tmp.name) / "launch_ok"
+        marker.write_text(proven)
+        for reverse, health, expected in (
+                (0, 0, launch_health.AWAITING_SELF_UPDATE),
+                (0, 1, None), (1, 0, None), (128, 0, None)):
+            with self.subTest(reverse=reverse, health=health):
+                with patch.object(launch_health.subprocess, "run") as run:
+                    run.side_effect = [Mock(returncode=0, stdout=proven),
+                                       Mock(returncode=1), Mock(returncode=reverse),
+                                       Mock(returncode=health)]
+                    self.assertIs(launch_health.exact_live(merge), expected)
 
     def start(self, project='a', number=1):
         return tick.start(self.ctx, project, self.led.item(project, number), 'build', 'claude')
