@@ -147,7 +147,11 @@ class PostMergeTests(unittest.TestCase):
     @mock.patch("mahler.notify.send", return_value=True)
     def test_workflow_failure_dedupes_against_existing_open_issue(self, ping):
         self.workflow_setup()
-        self.led.upsert_item("p", 83, title="Deploy sync backend on main fails npm audit")
+        self.led.upsert_item(
+            "p", 83,
+            title="Deploy sync backend on main fails npm audit",
+            issue_body="Tracked run: https://github.com/x/y/actions/runs/10",
+        )
         self.gh.issue_state.return_value = "OPEN"
         self.gh.workflow_runs_for_commit.return_value = [self.workflow()]
         self.tick()
