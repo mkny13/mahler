@@ -59,6 +59,11 @@ class FormatTests(unittest.TestCase):
         for absent in ("Change 1", "Change 2", "UAT", "Ready to test", "verdict", "backlog"):
             self.assertNotIn(absent, text)
 
+        # Transition to shipped must never roll up into completed
+        led.event("state", "p", 1, "working -> shipped (PR merged)")
+        data = digest.gather(led, {}, since=clock.t)
+        self.assertEqual(data["completed"], [])
+
     def test_automated_and_quiet_completion_roll_up_as_completed(self):
         clock = Clock()
         led = Ledger(":memory:", clock=clock)

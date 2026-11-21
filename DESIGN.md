@@ -426,14 +426,18 @@ closed automatically) and only its delimited `verify-blockers` section is rewrit
 item is closed and the criteria remain, exactly one linked follow-up is filed per blocker
 fingerprint; if that also closes unresolved, one diagnostic comment and ping replace
 further attempts. Lookups use the exhaustive inventory, so failures never authorize creates.
-Release snapshots,
-historical-table (`uat`) shipment entries and shipped events are recorded at merge time. Startup preserves both
-shipped rows and historical done rows. Only accepted D10 evidence promotes a
-shipment to done and removes its lifecycle label. Parent closure does not change
-that child evidence clock. D10 accepts
-automated evidence or exactly 14 days without adverse evidence. An early automated
-completion reopens to ready/p1 on adverse evidence inside that window; optional
-failure reports create linked fix work. Historical storage is retained.
+Owner decision, 2026-10-06: manual UAT as a shipment gate is retired. The historical
+`uat` table held **277 changes awaiting a verdict**, shipped 2026-09-15 through
+2026-10-06 (phish-in 103, mahler 81, groundwork 31, hockey 29, others 33), against
+**5 verdicts ever, all passes**, last recorded 2026-09-27; Mike is the sole user of
+these personal apps and discovers problems through ordinary use. Release snapshots,
+historical-table (`uat`) shipment entries and shipped events are recorded at merge time.
+Startup preserves both shipped rows and historical done rows. Only accepted D10
+evidence promotes a shipment to done and removes its lifecycle label. Parent closure
+does not change that child evidence clock. D10 accepts automated evidence or exactly
+**14 days** without adverse evidence (quiet completion). An early automated completion
+reopens to ready/p1 on adverse evidence inside that 14-day window; optional failure
+reports create linked fix work. Historical storage is retained.
 
 ### D7 — Staleness: activity clocks, not a calendar
 
@@ -2012,10 +2016,15 @@ is [docs/console/design.md](docs/console/design.md): desktop `3a`, phone `2a`, c
 - **What changed** on desktop and phone shows recent shipments with their evidence,
   links and optional **This is broken** capture. It is history, not an owner inbox:
   no pending-verdict count, pass control or backlog reminder. D10's 2026-10-06
-  decision (277 pending changes versus 5 historical passes) retires manual verdicts.
-  Automated evidence or a 14-day quiet period completes work; adverse evidence
-  inside that window reopens an early automated completion. Reports file linked
-  p1 fix work, while shipment and historical verdict storage remain intact.
+  decision retires manual verdicts based on the dated evidence: the historical `uat`
+  table held **277 changes awaiting a verdict**, shipped 2026-09-15 through 2026-10-06
+  (phish-in 103, mahler 81, groundwork 31, hockey 29, others 33), against **5 verdicts
+  ever, all passes**, last recorded 2026-09-27; Mike is the sole user of these personal
+  apps and discovers problems through ordinary use. Automated evidence or exactly **14 days**
+  without adverse evidence (quiet completion) completes work; adverse evidence inside
+  that 14-day window reopens an early automated completion to ready/p1 once. Optional failure
+  reports file linked p1 fix work, while shipment and historical verdict (`uat`) storage
+  remain intact (D10).
 - **Undo a merge goes through the normal pipeline.** The tick makes the revert commit,
   files the issue and hands it to the conductor, so CI gates a revert like any change. The
   console always asks first.
@@ -2197,7 +2206,7 @@ Decided 2026-09-23 (your call). Amends D8's fixed build order, D21's "planning w
 - **A variant is a model at a reasoning effort, on one platform slot.** GPT-6 Luna at low, medium and high are three variants. So are Opus 5 and Opus 5.5. Effort moves cost and quality as much as the model does, and every CLI Mahler drives exposes it (`claude --effort`, `codex -c model_reasoning_effort=`, `copilot --reasoning-effort`, `agy --effort`, `cline --thinking`, `kilo run --variant`).
 - **Newer isn't assumed better or cheaper.** A new model or version enters as a candidate beside the incumbent, and replaces it only when the numbers say so. Some releases use fewer tokens than their predecessor and some use more (Opus 5 vs 4.8). So slots pin exact model IDs. Aliases like `opus`, which silently follow the latest release, aren't used for routing.
 - **Cost is tokens × list price, per run.** Every CLI already logs tokens. Mahler prices them from `[prices]` in the config ("API-equivalent dollars"), multiplied by an optional per-quota-group `cost_weight` (default 1). It's the one currency that compares a free pool, a subscription and a pay-per-token model, and it captures a verbose model's extra tokens. Mahler still never spends real money: D8's quota lines and "never extra usage" are unchanged.
-- **"Gets the job done" is measured.** A build or fix succeeds on the first attempt when its item merges with no fix round, no failed review, no revert and no bug filed against it within 14 days of the merge. Only a confirmed merge opens the 14-day linked-bug window; a PR closed without merging creates no shipment or release note. The scorecard provisionally credits a DONE run with no adverse evidence immediately; this is distinct from D10’s automated-or-quiet item completion. Later fixes, failed reviews, reverts, linked bugs inside the inclusive 14-day window and optional console “This is broken” reports remain adverse. Historical UAT passes never add positive evidence or resolve pending attempts. This follows the 2026-10-06 decision in D10 (277 pending versus 5 passes); early automated completion can reopen within that window. A plan or sort succeeds when its sub-issues do: they build on the first attempt, aren't split again, don't escalate, and don't go to needs-you.
+- **"Gets the job done" is measured.** A build or fix succeeds on the first attempt when its item merges with no fix round, no failed review, no revert and no bug filed against it within 14 days of the merge. Only a confirmed merge opens the 14-day linked-bug window; a PR closed without merging creates no shipment or release note. The scorecard provisionally credits a DONE run with no adverse evidence immediately; this is distinct from D10’s automated-or-quiet item completion (which completes on automated evidence or after an exact 14-day quiet window without adverse evidence). Later fixes, failed reviews, reverts, linked bugs inside the inclusive 14-day window and optional console “This is broken” reports (filing linked p1 fix work) remain adverse. Historical UAT passes never add positive evidence or resolve pending attempts. This follows the owner decision on 2026-10-06 in D10: the historical `uat` table held **277 changes awaiting a verdict**, shipped 2026-09-15 through 2026-10-06 (phish-in 103, mahler 81, groundwork 31, hockey 29, others 33), against **5 verdicts ever, all passes** (last on 2026-09-27); Mike is the only user of these personal apps. Early automated completion reopens to ready/p1 on adverse evidence inside that exact 14-day window. A plan or sort succeeds when its sub-issues do: they build on the first attempt, aren't split again, don't escalate, and don't go to needs-you.
 - **Cost per success** = average cost per attempt ÷ first-attempt success rate. A cheap variant that fails half the time can cost more than a mid-priced one that rarely fails.
 - **Measurement ranks within free-first precedence (D8), never across it.** Free pools always come before paid quota; D33 picks among them. Platforms may explicitly declare `cost_class = "free" | "paid"`; otherwise personal-account Claude slots default to paid and everything else, including work-account slots, defaults to free. Variants inherit their slot's class. D23 burst promotion remains the deliberate exception because that Claude quota is about to expire.
 - **Good enough** means at least 8 attempts at that role and size, and the lower end of an 80% Wilson interval on first-attempt success at or above the bar: build/fix 70%, sort 80%, plan 75%. Among good-enough variants, the router takes the lowest cost per success that has headroom. Unproven and below-bar variants stay eligible as fallbacks, in that order.

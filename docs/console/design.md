@@ -140,7 +140,7 @@ rename freely, but the transitions matter.
 | `paused` | bool | Pause All. Drives banner + header state label |
 | `peakOverride` | bool | true = Claude may build during peak hours |
 | `tab` | `"now" \| "triage" \| "browse"` | phone view |
-| `dtab` | `"now" \| "needs" \| "test" \| "capture" \| "backlog" \| "history"` | desktop view |
+| `dtab` | `"now" \| "needs" \| "what_changed" (historical prototype: "test") \| "capture" \| "backlog" \| "history"` | desktop view |
 | `answers` | `{ [itemId]: string }` | needs-you answer, optimistic, undoable |
 | `drafts` | `{ [itemId]: string }` | typed reply in progress |
 | `uat` | `{ [itemId]: "pass" \| "fail" }` | Historical prototype verdict state; retired |

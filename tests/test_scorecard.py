@@ -60,6 +60,82 @@ class AttemptTests(unittest.TestCase):
         self.led.set_uat_verdict('p', 1, 'pass')
         self.assert_result(rid, 'pending')
 
+    def test_historical_pass_does_not_resolve_pending_or_failed_build(self):
+        # Plan attempt awaiting a running build attempt remains pending despite historical pass
+        plan_id = self.run_attempt(number=1, role='plan', outcome='READY')
+        self.advance()
+        self.run_attempt(number=1, role='build', status='running', ended_at=None)
+        self.assert_result(plan_id, 'pending')
+        self.led.add_uat('p', 1, 50, 'sha', 'Title', 'Historical checklist')
+        self.advance()
+        self.led.set_uat_verdict('p', 1, 'pass')
+        self.assert_result(plan_id, 'pending')
+
+        # Nonzero exit build attempt
+        self.advance()
+        rid_fail = self.run_attempt(number=2, exit_code=1)
+        self.assert_result(rid_fail, 'failure', 'nonzero exit')
+        self.led.add_uat('p', 2, 51, 'sha', 'Title', 'Historical checklist')
+        self.advance()
+        self.led.set_uat_verdict('p', 2, 'pass')
+        self.assert_result(rid_fail, 'failure', 'nonzero exit')
+
+    def test_historical_pass_does_not_override_adverse_evidence(self):
+        # 1. Later fix remains adverse despite historical pass
+        rid1 = self.run_attempt(number=1)
+        self.advance()
+        self.run_attempt(number=1, role='fix')
+        self.assert_result(rid1, 'failure', 'later fix run')
+        self.led.add_uat('p', 1, 50, 'sha', 'Title', 'Check')
+        self.advance()
+        self.led.set_uat_verdict('p', 1, 'pass')
+        self.assert_result(rid1, 'failure', 'later fix run')
+
+        # 2. Failed review remains adverse despite historical pass
+        self.advance()
+        rid2 = self.run_attempt(number=2)
+        self.advance()
+        self.led.event('review_verdict', 'p', 2,
+                       {'verdict': 'fail', 'review_run': 20, 'reviewed_sha': 'sha'})
+        self.assert_result(rid2, 'failure', 'failed review')
+        self.led.add_uat('p', 2, 51, 'sha', 'Title', 'Check')
+        self.advance()
+        self.led.set_uat_verdict('p', 2, 'pass')
+        self.assert_result(rid2, 'failure', 'failed review')
+
+        # 3. Revert remains adverse despite historical pass
+        self.advance()
+        rid3 = self.run_attempt(number=3)
+        self.advance()
+        self.led.event('revert_requested', 'p', 3, {'pr': 52})
+        self.assert_result(rid3, 'failure', 'revert')
+        self.led.add_uat('p', 3, 52, 'sha', 'Title', 'Check')
+        self.advance()
+        self.led.set_uat_verdict('p', 3, 'pass')
+        self.assert_result(rid3, 'failure', 'revert')
+
+        # 4. Bug within 14 days remains adverse despite historical pass
+        self.advance()
+        rid4 = self.run_attempt(number=4)
+        self.advance()
+        self.led.upsert_item('p', 4, pr=53)
+        self.led.event('shipped', 'p', 4, {'pr': 53})
+        self.bug(days=2, body='Breaks #4.', project='p')
+        self.assert_result(rid4, 'failure', 'bug within 14 days')
+        self.led.add_uat('p', 4, 53, 'sha', 'Title', 'Check')
+        self.advance()
+        self.led.set_uat_verdict('p', 4, 'pass')
+        self.assert_result(rid4, 'failure', 'bug within 14 days')
+
+        # 5. Reported failure remains adverse despite historical pass
+        self.advance()
+        rid5 = self.run_attempt(number=5)
+        self.ship()
+        self.led.add_uat('p', 5, 54, 'sha', 'Title', 'Check')
+        self.advance()
+        self.led.set_uat_verdict('p', 5, 'fail')
+        self.assert_result(rid5, 'failure', 'reported failure')
+
     def test_completion_kind_does_not_override_adverse_attempt_evidence(self):
         for kind in ('smoke', 'quiet'):
             with self.subTest(kind=kind):

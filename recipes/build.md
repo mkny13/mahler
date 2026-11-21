@@ -94,7 +94,7 @@ result is obtained, the better. Never trade verification for speed.
    follow-up (pick the smallest option meeting Done-when, record `Decided: …` in your summary);
    process or who posts evidence or comments (the conductor posts, D18); GitHub write, push or
    PR access (the conductor holds it: end DONE and note what it must post); asking the owner to
-   run, verify or UAT something (write it under "Needs a human to check" and end DONE).
+   run, verify or test something (write it under "Needs a human to check" and end DONE).
 6. If you genuinely cannot proceed because owner-provided access is missing (never GitHub push or issue-write access), commit what you
    have locally, report one actionable question naming the required operation and
    safe provisioning channel, and end with `STATUS: NEEDS-YOU [credentials] <the question, on one line>`.
