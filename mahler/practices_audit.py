@@ -357,6 +357,7 @@ class _Command:
     uncertain: bool = False
     reasons: tuple[str, ...] = ()
     uncertain_cites: tuple[str, ...] = ()
+    proven_test: bool = False
 
     def __iter__(self):
         return iter((self.cmd, self.cite))
@@ -412,7 +413,7 @@ def _workflow(tree, path):
                     if indent <= pr_indent:
                         break
                     pr_filter_lines.append(o_line)
-                    if re.search(r"^[ \t]*(?:branches|branches-ignore|types)\s*:", o_line):
+                    if re.search(r"^[ \t]*(?:branches|branches-ignore|paths|paths-ignore|types)\s*:", o_line):
                         pr_filtered = True
                         line_no = clean_text[:offset].count("\n") + 1
                         pr_filter_cite = f"{path}:{line_no}: PR trigger filter"
@@ -458,6 +459,7 @@ def _workflow(tree, path):
     jobs_idx = clean_text[:jobs_match.start()].count("\n")
 
     rows, jobs = [], []
+    unresolved_expansion = False
     current_job = ""
     job_has_condition = False
     job_cond_cite = ""
@@ -624,6 +626,7 @@ def _workflow(tree, path):
                     continue
                 cmd_dynamic = "${{" in part
                 expanded, expand_unknown = _expand(tree, part)
+                unresolved_expansion |= expand_unknown
                 unknown = expand_unknown or syntax_unknown
 
                 for cmd, cite in expanded:
@@ -670,7 +673,15 @@ def _workflow(tree, path):
                         cite=full_cite,
                         uncertain=cmd_uncertain,
                         reasons=tuple(cmd_reasons),
-                        uncertain_cites=tuple(cmd_cites)
+                        uncertain_cites=tuple(cmd_cites),
+                        # An opaque preceding step does not erase a literal test
+                        # invocation. Keep its uncertainty for verify provenance.
+                        proven_test=_is_test(cmd) and not any((
+                            job_has_condition, step_has_condition,
+                            job_has_continue_on_error, step_has_continue_on_error,
+                            pr_filtered, job_has_changed_cwd, step_has_changed_cwd,
+                            step_has_reusable, cmd_dynamic, unknown,
+                        )),
                     )
                     rows.append(cmd_obj)
                     if _is_test(cmd) and current_job not in jobs:
@@ -689,9 +700,12 @@ def _workflow(tree, path):
     structural_uncertainty = (
         pr_filtered or wf_anchors or wf_bad_jobs or wf_has_reusable or not rows
     )
+    # Other checks still need to know about every unresolved command, even
+    # when a separate direct test establishes ci-tests coverage.
     tests = [r for r in rows if _is_test(r.cmd)]
     proven_tests = [r for r in tests if not r.uncertain]
-    cmd_uncertainty = any(r.uncertain for r in tests) if proven_tests else any(r.uncertain for r in rows)
+    cmd_uncertainty = unresolved_expansion or any(
+        r.uncertain for r in (tests if proven_tests else rows))
     return _WorkflowResult(
         rows,
         structural_uncertainty or cmd_uncertainty,
@@ -727,7 +741,7 @@ def _ci(tree):
     structural_uncertainty = any(res[3] for _, res in target_results) or bool(errors)
 
     tests = [row for row in rows if _is_test(row.cmd)]
-    proven_tests = [row for row in tests if not row.uncertain]
+    proven_tests = [row for row in tests if row.proven_test]
     state = ("pass" if proven_tests and not structural_uncertainty else
              "unknown" if uncertain else "gap")
     evidence = [cite for _, cite in rows] + errors

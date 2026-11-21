@@ -171,7 +171,36 @@ class TestPracticesAudit(unittest.TestCase):
 
     def test_current_ci_workflow_proves_direct_tests(self):
         # Frozen fixture: later workflow changes must not weaken this regression.
-        workflow = 'name: ci\non:\n  pull_request:\n  merge_group:\n  push:\n    branches: [main]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          fetch-depth: 0\n      - uses: actions/setup-python@v7\n        with:\n          python-version: "3.14"\n      - run: python -m mahler.repo_guard\n      - name: Lesson consolidation gate\n        env:\n          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}\n          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.event.after }}\n        run: |\n          if echo "$BASE_SHA" | grep -qE \'^0+$\'; then\n            BASE_SHA="$(git hash-object -t tree /dev/null)"\n          fi\n          python -m mahler.consolidation_gate --base "$BASE_SHA" --head "$HEAD_SHA"\n      - run: python -m unittest discover -s tests -v\n      - run: python tests/run_random.py\n      - run: python -X dev tests/run_strict.py\n'
+        workflow = """name: ci
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - run: python -m mahler.repo_guard
+      - name: Lesson consolidation gate
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.event.after }}
+        run: |
+          if echo "$BASE_SHA" | grep -qE '^0+$'; then
+            BASE_SHA="$(git hash-object -t tree /dev/null)"
+          fi
+          python -m mahler.consolidation_gate --base "$BASE_SHA" --head "$HEAD_SHA"
+      - run: python -m unittest discover -s tests -v
+      - run: python tests/run_random.py
+      - run: python -X dev tests/run_strict.py
+"""
         self.write(".github/workflows/ci.yml", workflow)
         findings = self.results()
         self.assertEqual(findings["ci-tests"].state, "pass")
