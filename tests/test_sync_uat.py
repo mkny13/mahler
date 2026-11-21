@@ -645,22 +645,62 @@ class QuietWindowTests(unittest.TestCase):
         self.assertEqual((self.state(), ev["kind"], ev["author"]),
                          ("done", "smoke", "bot"))
 
-    def test_defect_inside_window_after_smoke_reopens_once(self):
+    def test_open_linked_bug_does_not_rebuild_source_item(self):
         self.smoke(self.MERGED + timedelta(minutes=5))
         self.after(hours=1)
         self.bug(20, self.MERGED + timedelta(days=3))
         self.after(days=4)
-        self.after(days=4, hours=1)
-        item = self.led.item("x", 5)
-        self.assertEqual((item["state"], item["priority"]), ("ready", 1))
-        self.assertEqual(self.gh.priorities, [1])
-        self.assertEqual(self.gh.opened, [5])
-        self.assertEqual(self.led.get_kv("reopen_mirror:x:5"), "done")
-        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='shipment_reopened'")), 1)
-        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
-        self.led.set_state("x", 5, "done", "again")
         self.after(days=5)
-        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='shipment_reopened'")), 1)
+        self.assertEqual(self.state(), "done")
+        self.assertEqual(self.gh.opened, [])
+        self.assertEqual(self.gh.priorities, [])
+        self.assertEqual(self.led.q("SELECT * FROM events WHERE kind='shipment_reopened'"), [])
+
+    def test_closed_linked_bug_does_not_reopen_shipment(self):
+        # Closed GitHub issues are represented as shipped/done in the ledger.
+        for state in ("shipped", "done"):
+            with self.subTest(state=state):
+                self.bug(20, self.MERGED + timedelta(days=3))
+                self.led.upsert_item("x", 20, state=state)
+                self.assertIsNone(sync.adverse_evidence(self.led, self.led.uat("x", 5)))
+                self.led.con.execute("UPDATE uat SET bug=20")
+                self.assertIsNone(sync.adverse_evidence(self.led, self.led.uat("x", 5)))
+                self.smoke(self.MERGED + timedelta(minutes=5))
+                self.after(days=4)
+                self.assertEqual(self.state(), "done")
+
+    def test_backlog_of_old_shipments_with_closed_bugs_zero_reopens(self):
+        for n in range(100, 133):
+            self.led.upsert_item("x", n, state="shipped", pr=n + 100)
+            self.led.add_uat("x", n, n + 100, "sha", "old", "check",
+                             shipped_at=iso(self.MERGED))
+            self.bug(n + 200, self.MERGED + timedelta(days=1), body=f"Regression of #{n}")
+            self.led.upsert_item("x", n + 200, state="done")
+        self.smoke(self.MERGED + timedelta(hours=1))
+        for _ in range(8):
+            self.after(days=60)
+        self.assertTrue(all(self.led.item("x", n)["state"] == "done" for n in range(100, 133)))
+        self.assertEqual(self.led.q("SELECT * FROM events WHERE kind='shipment_reopened'"), [])
+        self.assertEqual(self.gh.opened, [])
+
+    def test_same_tick_completion_cannot_reopen(self):
+        self.smoke(self.MERGED + timedelta(minutes=5))
+        self.now = self.MERGED + timedelta(hours=1)
+        self.led.event("revert_requested", "x", 5, {})
+        self.reconcile()
+        self.assertEqual(self.state(), "done")
+        self.assertEqual(self.led.q("SELECT * FROM events WHERE kind='shipment_reopened'"), [])
+        self.after(hours=2)
+        self.assertEqual(self.state(), "ready")
+
+    def test_expired_window_does_not_reopen_for_old_direct_evidence(self):
+        self.smoke(self.MERGED + timedelta(minutes=5))
+        self.after(hours=1)
+        self.now = self.MERGED + timedelta(days=3)
+        self.led.event("revert_requested", "x", 5, {})
+        self.after(days=14)
+        self.assertEqual(self.state(), "done")
+        self.assertEqual(self.gh.opened, [])
 
     def test_revert_inside_window_after_smoke_reopens_once(self):
         self.smoke(self.MERGED + timedelta(minutes=5))
@@ -682,7 +722,8 @@ class QuietWindowTests(unittest.TestCase):
     def test_replacement_shipment_requires_fresh_evidence_and_can_reopen(self):
         self.smoke(self.MERGED + timedelta(minutes=5))
         self.after(hours=1)
-        self.bug(20, self.MERGED + timedelta(days=3))
+        self.now = self.MERGED + timedelta(days=3)
+        self.led.event("revert_requested", "x", 5, {})
         self.after(days=4)
         self.assertEqual(self.state(), "ready")
         replacement = self.MERGED + timedelta(days=5)
@@ -695,7 +736,8 @@ class QuietWindowTests(unittest.TestCase):
         self.smoke(replacement + timedelta(hours=1))
         self.after(days=7)
         self.assertEqual(self.state(), "done")
-        self.bug(21, replacement + timedelta(days=3), body="Regression of #99")
+        self.now = replacement + timedelta(days=3)
+        self.led.event("revert_requested", "x", 5, {})
         self.after(days=9)
         self.assertEqual(self.state(), "ready")
         self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='shipment_reopened'")), 2)
@@ -745,7 +787,8 @@ class QuietWindowTests(unittest.TestCase):
     def test_reopen_label_failure_retries(self):
         self.smoke(self.MERGED + timedelta(minutes=5))
         self.after(hours=1)
-        self.bug(20, self.MERGED + timedelta(days=3))
+        self.now = self.MERGED + timedelta(days=3)
+        self.led.event("revert_requested", "x", 5, {})
         with mock.patch.object(self.gh, "set_state_label", side_effect=gh_module.GHError("x")):
             self.after(days=4)
         self.assertEqual(self.state(), "ready")

@@ -434,9 +434,12 @@ def adverse_evidence(led, row):
     refs = {n, row["pr"], item["pr"] if item else None}
     bugs = []
     for b in led.items(project):
-        if "type:bug" in json.loads(b["labels"] or "[]"):
+        if (b["state"] not in ("shipped", "done")
+                and "type:bug" in json.loads(b["labels"] or "[]")):
             bugs.append(dict(b))
     filed = led.item(project, row["bug"]) if row["bug"] else None
+    if filed and filed["state"] in ("shipped", "done"):
+        filed = None
     if linked_bug(bugs, dict(filed) if filed else None, row["bug"], refs, merged):
         return "linked bug"
     return None
@@ -448,6 +451,8 @@ def reconcile_shipped(ctx, project):
         return
     led = ctx.led
     quiet_budget = QUIET_BATCH
+    # Only consider completions that existed before this reconciliation pass.
+    completed = led.items(project, ["done"])
     # Persist attempts, including failures, so a bad item cannot monopolize the
     # batch. Quiet-window checks have a separate bounded budget and bypass the
     # ordinary six-hour cooldown once when the boundary is crossed.
@@ -495,15 +500,17 @@ def reconcile_shipped(ctx, project):
             ctx.say(f"{project}#{n}: evidence lookup failed — {exc}")
     # An early automated completion is undone, once, by adverse evidence that
     # falls inside its observation window; quiet completions never are.
-    for item in led.items(project, ["done"]):
+    for item in completed:
         row = led.uat(project, item["number"])
-        if row is None or not row["shipped_at"]:
+        if (row is None or not row["shipped_at"]
+                or led.now() >= parse(row["shipped_at"]) + DEFECT_WINDOW):
             continue
         if not led.q1("SELECT 1 FROM completion_evidence WHERE project=? AND number=? "
                       "AND kind='smoke'", (project, item["number"])):
             continue
         reason = adverse_evidence(led, row)
-        if reason:
+        # A linked bug owns its fix; rebuilding the source duplicates that work.
+        if reason and reason != "linked bug":
             led.reopen_shipment(project, item["number"], reason)
     for key in [r["key"] for r in led.q("SELECT key FROM kv WHERE key LIKE ? AND value='pending'",
                                         (f"reopen_mirror:{project}:%",))]:
