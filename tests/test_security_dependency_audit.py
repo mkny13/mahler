@@ -109,61 +109,88 @@ class SecurityDependencyAuditTests(unittest.TestCase):
             dependency_vetting.vet(before, after_range_only, now=NOW, opener=mock_opener)
         mock_opener.assert_not_called()
 
-    def test_network_timeout_and_malformed_registry_response_fails_closed(self):
-        """Case 2 (network timeout) + Case 1 (malformed registry response).
-
-        A PR modifies multiple pinned Python dependencies. The transport layer
-        experiences a network timeout on one dependency and a malformed registry
-        response (e.g. invalid JSON or corrupted payload) on another. Verifies:
-        1. VettingError is raised; partial successes never permit an unverified pass.
-        2. Retries do not bypass persistent timeouts.
-        3. Caller (ship._vet_pr_dependencies) catches VettingError, holds the PR,
-           and leaves the PR unmerged.
-        """
+    def test_malformed_registry_response_and_caller_refusal(self):
+        """Case 1 (malformed registry response) plus caller refusal."""
         before = {}
         after = {
-            "pyproject.toml": (
-                '[project]\n'
-                'dependencies = ["pkg-alpha==1.0.0", "pkg-beta==2.0.0"]\n'
-            ),
-            "uv.lock": (
-                'version = 1\n\n'
-                '[[package]]\nname = "pkg-alpha"\nversion = "1.0.0"\n\n'
-                '[[package]]\nname = "pkg-beta"\nversion = "2.0.0"\n'
-            ),
+            "pyproject.toml": '[project]\ndependencies = ["pkg-beta==2.0.0"]\n',
+            "uv.lock": 'version = 1\n\n[[package]]\nname = "pkg-beta"\nversion = "2.0.0"\n',
         }
 
         calls = []
 
         def opener(request, timeout):
             calls.append(request.full_url)
-            if "pkg-alpha" in request.full_url:
-                raise TimeoutError("connection timed out to pypi.org")
             if "pkg-beta" in request.full_url:
-                # Malformed registry response: invalid JSON body
                 return Response("<html>502 Bad Gateway</html>", raw=True)
-            if request.full_url == "https://api.osv.dev/v1/query":
-                return Response({"vulns": []})
             raise AssertionError(f"Unexpected request URL: {request.full_url}")
 
-        # 1. Direct vetting fails closed:
         with self.assertRaises(dependency_vetting.VettingError) as cm:
             dependency_vetting.vet(before, after, now=NOW, opener=opener)
         self.assertIn("lookup failed", str(cm.exception))
+        self.assertEqual(calls, ["https://pypi.org/pypi/pkg-beta/json"])
 
-        # 2. Conductor caller integration:
         self.led.upsert_item("x", 5, pr=88)
         with mock.patch.object(self.gh, "dependency_files", return_value=(before, after)), \
              mock.patch.object(ship.dependency_vetting, "urlopen", side_effect=opener):
             allowed = ship._vet_pr_dependencies(
                 self.ctx, "x", self.item(), 88, self.gh, self.gh.pr_view(88)
             )
-
         self.assertFalse(allowed, "Conductor must refuse merge when registry/timeout failures occur")
         self.assertEqual(self.gh.merged, [], "PR must remain unmerged")
         rec = self.wait_record()
         self.assertEqual(rec.get("cause"), "dependency_vetting")
         self.assertIn("lookup failed", rec.get("reason", ""))
+
+    def test_network_timeout_and_caller_refusal(self):
+        """Case 2 (network timeout) plus caller refusal."""
+        before = {}
+        after = {
+            "pyproject.toml": '[project]\ndependencies = ["pkg-alpha==1.0.0"]\n',
+            "uv.lock": 'version = 1\n\n[[package]]\nname = "pkg-alpha"\nversion = "1.0.0"\n',
+        }
+        calls = []
+
+        def opener(request, timeout):
+            calls.append(request.full_url)
+            raise TimeoutError("connection timed out to pypi.org")
+
+        with self.assertRaises(dependency_vetting.VettingError) as cm:
+            dependency_vetting.vet(before, after, now=NOW, opener=opener)
+        self.assertIn("lookup failed", str(cm.exception))
+        self.assertEqual(len(calls), 2, "transport retries must both reach the opener")
+
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(self.gh, "dependency_files", return_value=(before, after)), \
+             mock.patch.object(ship.dependency_vetting, "urlopen", side_effect=opener):
+            allowed = ship._vet_pr_dependencies(
+                self.ctx, "x", self.item(), 88, self.gh, self.gh.pr_view(88)
+            )
+        self.assertFalse(allowed)
+        self.assertEqual(self.gh.merged, [])
+
+    def test_cargo_only_change_is_a_documented_gate_bypass(self):
+        """Cargo.toml/Cargo.lock are outside relevant_path and return no evidence.
+
+        This is a characterization of the concrete unsupported-format gap. It is
+        not a clean-result contract: the synthetic Cargo-only change must remain
+        visible as unsupported coverage rather than be interpreted as scanned.
+        """
+        before = {"Cargo.toml": '[package]\nname = "demo"\n'}
+        after = {
+            "Cargo.toml": '[package]\nname = "demo"\nversion = "2.0.0"\n',
+            "Cargo.lock": 'version = 3\n[[package]]\nname = "demo"\nversion = "2.0.0"\n',
+        }
+        for path in after:
+            self.assertFalse(
+                dependency_vetting.relevant_path(path),
+                f"{path} must remain visibly outside scanner relevant_path",
+            )
+        self.assertEqual(
+            dependency_vetting.changed_dependencies(before, after),
+            [],
+            "Current implementation returns no findings for unsupported Cargo formats",
+        )
 
     def test_advisory_block_and_caller_missing_evidence_refusal(self):
         """Case 4 (advisory severity requiring block) + Missing Evidence Refusal.

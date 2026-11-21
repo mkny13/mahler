@@ -16,7 +16,7 @@ Key conclusions:
 1. **Core Package Purity:** The core `mahler` package strictly maintains a standard-library-only contract across all 42 modules in `mahler/*.py` and `mahler/console/*.py`. Zero external third-party dependencies are required for the daemon, console, scheduler, ledger, or conductor.
 2. **Scanner Fail-Closed Guarantees:** Mahler's dependency vetting engine (`mahler/dependency_vetting.py`) and shipping conductor integration (`mahler/ship.py`) fail closed across all five evaluated failure boundaries: malformed registry responses, network timeouts, unresolved version ranges, high/critical/unknown advisory scores, and unsupported lockfile formats. Furthermore, the shipping conductor refuses to dispatch fix runs when review reports missing or disputed gate evidence, entering bounded holds rather than risking unvetted merges.
 3. **Identified Coverage Gaps & Limitations:**
-   - `sdk_runner/pyproject.toml` declares open minimum version ranges (`claude-agent-sdk>=0.2.165`, `setuptools>=68`) without a pinned lockfile (`uv.lock` or `poetry.lock`). Transitive dependency coverage for `sdk_runner` is therefore **unknown**. If resolved to `setuptools==68.0.0`, 7 known public vulnerabilities exist (though fixed in `>=70.0.0`).
+   - `sdk_runner/pyproject.toml` declares open minimum version ranges (`claude-agent-sdk>=0.2.165`, `setuptools>=68`) without a pinned lockfile (`uv.lock` or `poetry.lock`). Transitive dependency coverage for `sdk_runner` is therefore **unknown**. Snapshot lookup found that `setuptools==68.0.0` is exposed to public advisories; later snapshots such as `setuptools==75.0.0` remain exposed to separate advisories and must not be described as vulnerability-free.
    - `.github/dependabot.yml` configures automated updates solely for `github-actions`. There is no automated Dependabot or scanner coverage for `sdk_runner/pyproject.toml`.
    - `.github/workflows/ci.yml` uses mutable major tags (`actions/checkout@v7`, `actions/setup-python@v7`) rather than immutable commit SHAs.
 
@@ -83,21 +83,21 @@ flowchart TD
 | **2. Network Timeout** | `_registry_request` (lines 811-822)<br>`_request_json` (lines 839-840) | **Fails closed.** Transport calls enforce `timeout=20`. Retries `URLError`/`TimeoutError`/`OSError` once. If still failing, raises `VettingError("registry/advisory lookup failed: ...")`. | `_vet_gate` captures failure string. Conductor releases lease, enters bounded wait without merging. Duplicate pings suppressed. | `supported` |
 | **3. Unresolved Python Dependency Range** | `_changed_project_dependencies` (lines 763-784)<br>`vet` (lines 1259-1262) | **Fails closed.** Non-exact declarations (`>=`, `~=`, `^`, `*`) without a matching `uv.lock` or `poetry.lock` leave `version = None`. `vet()` raises `VettingError("unresolved exact version for ...")` before making any network calls. | Conductor blocks PR merge. Posts actionable explanation instructing agent to supply exact pin or lockfile. | `supported` |
 | **4. Advisory Severity Requiring Block** | `_severity` (lines 1202-1226)<br>`_advisories` (lines 1245-1248)<br>`vet` (lines 1276-1289) | **Fails closed.** Evaluates CVSS v3 vectors, scores, and database severities. `HIGH`, `CRITICAL`, and `UNKNOWN` severities mark finding `blocked = True` and return blocking reason. Also blocks publications < 14 days old. | `_vet_gate` detects `blocked is not None`, logs blocking reason, halts shipping, holds PR, posts finding comment. | `supported` |
-| **5. Unsupported Manifest / Lock Format** | `_UNSUPPORTED_LOCKS` (lines 56-59)<br>`_changed_project_dependencies` (lines 702-709) | **Fails closed.** Diffs touching `yarn.lock`, `Pipfile`, `Pipfile.lock`, `setup.py`, `setup.cfg`, `requirements*.in`, or `constraints*.txt` raise `VettingError("unsupported dependency lockfile change: ...")`. | `vetting_reason` specifically extracts unsupported lockfile name and provides targeted remediation advice (revert lockfile or extend conductor support). Merge blocked. | `supported` |
+| **5. Unsupported Manifest / Lock Format** | `_UNSUPPORTED_LOCKS` (lines 56-59)<br>`_changed_project_dependencies` (lines 702-709)<br>`relevant_path` (lines 69-70)<br>`gh.dependency_files` (lines 1137-1162) | **Partially supported, concrete gap.** Known unsupported names that reach `_changed_project_dependencies` raise `VettingError`. However, `Cargo.toml` and `Cargo.lock` do not match `_RELEVANT`, and `gh.dependency_files` returns `{}`, `{}` before `_changed_project_dependencies` can inspect them. A Cargo-only change is therefore recorded with clean/no-change evidence rather than rejected. | `_vet_gate` sees no changed dependencies and records `clean: true`; `_vet_pr_dependencies` allows the merge. Impact: Rust dependency changes can bypass advisory/lock evidence in this gate. | `coverage gap / defect` |
 | **Missing Gate Evidence Refusal** | `_all_missing_gate_evidence` (lines 2492-2538)<br>`_review_triggered_fix` (lines 2557-2563) | **Fails closed.** If adversarial review findings indicate missing or disputed conductor dependency-vetting gate evidence, caller refuses to start a fix run or escalate tier. | Caller holds PR in bounded wait (`kind="evidence"`, `waits.hold`) and releases conductor lease. Prevents looping or bypassing evidence. | `supported` |
 
 ---
 
 ## 4. Public Advisory Lookups (Audited Date: 2026-11-21)
 
-All queries conducted against unauthenticated public registry endpoints (`pypi.org`, `api.osv.dev`, `github.com`). Per audit protocol, open ranges and mutable tags are labeled with exact queried snapshots, and deployed/transitive coverage is reported as **unknown**.
+All queries were intended against unauthenticated public registry endpoints (`pypi.org`, `api.osv.dev`, `github.com`). Per audit protocol, open ranges and mutable tags are labeled with exact queried snapshots, and deployed/transitive coverage is reported as **unknown**. Direct PyPI DNS access was unavailable from this audit run; that failed lookup is not converted into a clean result. GitHub tag resolution and public advisory evidence were available.
 
 ### 4.1 Findings Table
 
 | Target Name | Ecosystem | Declared Ref / Specifier | Queried Version / Snapshot | Source Query URL | Advisory Status / Findings | Transitive / Deployed Coverage |
 |---|---|---|---|---|---|---|
-| `claude-agent-sdk` | PyPI | `>=0.2.165` | `0.2.165` (snapshot from `FINDINGS.md`), `0.2.187` (latest) | `https://api.osv.dev/v1/query`<br>`https://pypi.org/pypi/claude-agent-sdk/json` | **Clean on queried versions.** (0 vulnerabilities for 0.2.165 or 0.2.187). Historical advisory `GHSA-h4mw-j7qp-8mwm` (Command injection via `resume` option, CRITICAL) affected versions `<0.2.121`; resolved in `0.2.121`. | **UNKNOWN.** No lockfile exists. Sub-dependencies (`anthropic`, `pydantic`, `anyio`, etc.) are unpinned. |
-| `setuptools` | PyPI (build) | `>=68` | `68.0.0` (minimum satisfying bound), `84.2.1` (latest) | `https://api.osv.dev/v1/query`<br>`https://pypi.org/pypi/setuptools/json` | **7 vulnerabilities if resolved to 68.0.0:**<br>- `GHSA-cx63-2mw6-8hw5` (Command Injection via package URL, High)<br>- `GHSA-5rjg-fvgr-3xxf` (Path Traversal in download, Moderate)<br>- `GHSA-h35f-9h28-mq5c` (Unicode exclusion bypass on macOS, Moderate)<br>- `GHSA-xmj3-9gf7-h52w` (Windows path escape, High)<br>- `PYSEC-2025-49`, `PYSEC-2026-1918`, `PYSEC-2026-3447`<br>**0 vulnerabilities if resolved to latest (84.2.1).** | **UNKNOWN.** Host environment resolver determines exact installed version during `uv tool install`. |
+| `claude-agent-sdk` | PyPI | `>=0.2.165` | `0.2.165` and `0.2.187` proposed snapshots; neither is a resolved deployment snapshot | `https://api.osv.dev/v1/query`<br>`https://pypi.org/pypi/claude-agent-sdk/json` | Direct PyPI lookup was unavailable; public OSV search shows historical advisory `GHSA-h4mw-j7qp-8mwm` (argument injection via `resume`, affected `<0.2.121`, fixed in `0.2.121`). **Advisory status for the declared range and exact deployment snapshot is UNKNOWN, not clean.** | **UNKNOWN.** No lockfile exists. Sub-dependencies (`anthropic`, `pydantic`, `anyio`, etc.) are unpinned. |
+| `setuptools` | PyPI (build) | `>=68` | `68.0.0` (minimum satisfying bound), `75.0.0` (clearly labeled vulnerable snapshot) | `https://api.osv.dev/v1/query`<br>`https://pypi.org/pypi/setuptools/json`<br>`https://github.com/pypa/setuptools/security/advisories/GHSA-5rjg-fvgr-3xxf` | Public evidence for `75.0.0` still lists `GHSA-5rjg-fvgr-3xxf` (fixed in `>=78.1.1`), `GHSA-h35f-9h28-mq5c` (fixed in `>=83.0.0`), and `GHSA-xmj3-9gf7-h52w` (fixed in `>=84.1.0`). Earlier snapshot `68.0.0` also has public advisory exposure. **No clean or vulnerability-free resolution is asserted.** | **UNKNOWN.** Host environment resolver determines exact installed version during `uv tool install`; deployed and transitive build-tool versions are not recorded. |
 | `actions/checkout` | GitHub Actions | `@v7` | Tag `v7` (`3d3c42e5aac5ba805825da76410c181273ba90b1`, matching release `v7.0.1`) | `https://api.osv.dev/v1/query`<br>`https://github.com/actions/checkout.git` | **0 known advisories in OSV.** | **UNKNOWN / Mutable Tag.** Tag `@v7` is mutable; deployed action script depends on GitHub release ref. |
 | `actions/setup-python` | GitHub Actions | `@v7` | Tag `v7` (`6d4fd22b20465ccc0f7354476588e8df7c9ca0e0`, matching release `v7.1.0`) | `https://api.osv.dev/v1/query`<br>`https://github.com/actions/setup-python.git` | **0 known advisories in OSV.** | **UNKNOWN / Mutable Tag.** Tag `@v7` is mutable; runner node environment and runtime scripts unpinned. |
 
@@ -111,11 +111,11 @@ All queries conducted against unauthenticated public registry endpoints (`pypi.o
 | **SDK Runner Version Pinning** | `48f30e7` | `sdk_runner/pyproject.toml` | `test_sdk_runner_pyproject_unpinned_range_fails_closed_without_lockfile` | **coverage gap** | Uses `>=` ranges without lockfile. Vetting engine correctly blocks PR changes lacking exact versions, but existing static files lack lockfile. |
 | **Dependabot Update Scope** | `48f30e7` | `.github/dependabot.yml` | Inspection of configuration | **coverage gap** | Only GitHub Actions are monitored. No Dependabot coverage for `sdk_runner/pyproject.toml`. |
 | **Workflow Action Ref Immutability** | `48f30e7` | `.github/workflows/ci.yml` | Inspection of workflow refs | **accepted limitation** | Actions use `@v7` mutable tags instead of full commit SHAs. Dependabot maintains weekly minor/patch updates. |
-| **Malformed Registry Response Handling** | `48f30e7` | `mahler.dependency_vetting._request_json`, `_metadata` | `test_network_timeout_and_malformed_registry_response_fails_closed` | **supported** | Fails closed with `VettingError`; conductor caller halts merge and enters bounded hold. |
-| **Network Timeout Handling** | `48f30e7` | `mahler.dependency_vetting._registry_request` | `test_network_timeout_and_malformed_registry_response_fails_closed` | **supported** | Transport timeouts retried once; persistent timeouts raise `VettingError`; conductor halts merge. |
+| **Malformed Registry Response Handling** | `48f30e7` | `mahler.dependency_vetting._request_json`, `_metadata` | `test_malformed_registry_response_and_caller_refusal` | **supported** | The malformed-JSON branch is reached independently and raises `VettingError`; conductor caller halts merge and enters bounded hold. |
+| **Network Timeout Handling** | `48f30e7` | `mahler.dependency_vetting._registry_request` | `test_network_timeout_and_caller_refusal` | **supported** | Transport timeout retries are exercised independently and persistent timeouts raise `VettingError`; conductor halts merge. |
 | **Unresolved Dependency Range Handling** | `48f30e7` | `mahler.dependency_vetting._changed_project_dependencies`, `vet` | `test_unresolved_python_range_and_unsupported_lock_combination_fails_closed` | **supported** | Open ranges without lockfiles fail closed before network requests. |
 | **Advisory Severity Blocking** | `48f30e7` | `mahler.dependency_vetting._severity`, `_advisories` | `test_advisory_block_and_caller_missing_evidence_refusal` | **supported** | HIGH, CRITICAL, and UNKNOWN advisories block merge. |
-| **Unsupported Lockfile Handling** | `48f30e7` | `mahler.dependency_vetting._UNSUPPORTED_LOCKS` | `test_unresolved_python_range_and_unsupported_lock_combination_fails_closed` | **supported** | Unsupported lockfiles immediately raise `VettingError`; conductor generates remediation instructions. |
+| **Unsupported Lockfile Handling** | `48f30e7` | `mahler.dependency_vetting._UNSUPPORTED_LOCKS`, `_RELEVANT`, `mahler.gh.GH.dependency_files` | `test_unresolved_python_range_and_unsupported_lock_combination_fails_closed`, `test_cargo_only_change_is_a_documented_gate_bypass` | **coverage gap / defect** | Known unsupported lockfiles raise `VettingError`, but Cargo.toml/Cargo.lock are absent from `relevant_path`, so `gh.dependency_files` returns no snapshots and the caller records clean/no-change evidence. |
 | **Missing Gate Evidence Refusal** | `48f30e7` | `mahler.ship._all_missing_gate_evidence`, `_review_triggered_fix` | `test_advisory_block_and_caller_missing_evidence_refusal` | **supported** | Conductor refuses review-fix escalation when gate evidence is missing or disputed. |
 
 ---
@@ -125,8 +125,8 @@ All queries conducted against unauthenticated public registry endpoints (`pypi.o
 The following bounded remediation proposals address the identified coverage gaps and accepted limitations:
 
 1. **Provide a Resolved Lockfile for `sdk_runner`:**
-   - *Proposal:* Generate and commit `sdk_runner/uv.lock` pinning `claude-agent-sdk==0.2.187` and `setuptools>=75.0.0` (or replacing `setuptools` build-backend with standard `flit_core` or `hatchling` to eliminate `setuptools` attack surface).
-   - *Impact:* Guarantees reproducible, vulnerability-free builds for the Claude Agent SDK runner and eliminates exposure to historical `setuptools` vulnerabilities.
+   - *Proposal:* Generate and commit `sdk_runner/uv.lock` with an exact, currently vetted `claude-agent-sdk` snapshot and an exact `setuptools` snapshot not affected by the identified advisories (for example, do not infer safety from `>=75.0.0`; require evidence for a fixed version or remove the build-time dependency). Re-run public advisory lookup after resolution.
+   - *Impact:* Provides reproducible installed-version evidence and removes the range-based ambiguity without asserting a clean build based on an unavailable lock or registry response.
 
 2. **Add PyPI Ecosystem to Dependabot:**
    - *Proposal:* Update `.github/dependabot.yml` to include:
@@ -145,3 +145,21 @@ The following bounded remediation proposals address the identified coverage gaps
      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
      ```
    - *Impact:* Prevents third-party tag mutation attacks in CI workflows while Dependabot continues to manage updates.
+
+4. **Recognize Cargo Manifests and Locks in the Gate:**
+   - *Proposal:* Add `Cargo.toml` and `Cargo.lock` to `relevant_path`, and add bounded parsing or a fail-closed unsupported-format return until Rust dependency evidence is implemented.
+   - *Impact:* Prevents a Cargo-only change from being silently recorded as clean evidence. Unsupported Rust changes should hold the ship gate rather than merge.
+
+## 7. Verification Record
+
+Commands run in the Mahler worktree on 2026-11-21:
+
+| Command | Outcome | Notes |
+|---|---|---|
+| `python3 -m unittest tests.test_security_dependency_audit` | **PASS** | 6 synthetic audit tests passed. |
+| `python3 -m mahler.repo_guard` | **PASS** | Repository guard passed. |
+| `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=all python3 -m unittest discover -s tests` | **PASS** | 3831 tests ran; 2 skipped. The process-local Git setting is required only for synthetic bare-mirror tests on this runner. |
+| `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=all python3 tests/run_random.py` | **PASS** | 3831 tests ran; random order seed `393670573`; 2 skipped. |
+| `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=all python3 -X dev tests/run_strict.py` | **PASS** | Strict runner passed. |
+
+The direct unit-suite rerun needed the process-local bare-repository setting after the runner's default `safe.bareRepository=explicit` policy rejected synthetic repositories. This is runner/toolchain state, not a repository-code defect.
