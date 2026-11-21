@@ -44,6 +44,10 @@ def parse_payload(text):
     if (not isinstance(pending, list) or any(
             not isinstance(c, str) or c not in config.PRACTICES_AUDIT_CHECKS for c in pending)):
         raise ValueError("invalid pending_practices_checks")
+    conductor = payload.get("conductor_checks", [])
+    if (not isinstance(conductor, list)
+            or any(not isinstance(c, str) or not c.strip() for c in conductor)):
+        raise ValueError("invalid conductor_checks")
     question = payload.get("owner_question")
     if question is not None and (not isinstance(question, str) or not question.strip()):
         raise ValueError("invalid owner_question")
@@ -83,9 +87,40 @@ def finish(e):
         record.update(phase="verdict", verdict="pass" if e.verb == "REVIEW-PASS" else "fail",
                       review_evidence=payload["evidence"], human_checks=payload["human_checks"],
                       pending_practices_checks=payload.get("pending_practices_checks", []),
+                      conductor_checks=payload.get("conductor_checks", []),
                       owner_question=payload.get("owner_question"))
     save(e.led, e.project, e.number, record)
     e.set_state("verifying", "no-change claim review awaiting conductor")
+
+
+def _base_ci_state(gh, base):
+    """(state, detail) of the checks on the configured base, read by the conductor."""
+    rollup = gh.base_checks(base)
+    if not rollup:
+        return "none", "no checks reported on base"
+    bad, pending = [], []
+    for c in rollup:
+        name = c.get("name") or c.get("context") or "check"
+        status, concl, state = (c.get("status") or ""), (c.get("conclusion") or ""), (c.get("state") or "")
+        if status and status != "COMPLETED" or state in ("PENDING", "EXPECTED"):
+            pending.append(name)
+        elif concl in ("FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE", "ACTION_REQUIRED") \
+                or state in ("FAILURE", "ERROR"):
+            bad.append(name)
+    if bad:
+        return "failure", "failing: " + ", ".join(bad)
+    if pending:
+        return "pending", "pending: " + ", ".join(pending)
+    return "success", f"{len(rollup)} checks passed"
+
+
+def github_facts(gh, base):
+    """GitHub-side facts the reviewer cannot read, verified by the conductor."""
+    try:
+        state, detail = _base_ci_state(gh, base)
+    except Exception as exc:  # advisory for the reviewer; the verdict gate re-reads it
+        return f"CI state on {base}: unavailable ({redact.redact(str(exc))})"
+    return f"CI state on {base} (conductor-verified): {state} — {detail}"
 
 
 def fetched_base(ctx, project):
@@ -169,6 +204,22 @@ def advance(ctx, project, item):
             if not _owned(ctx, project, n, epoch):
                 return True
             save(led, project, n, record)
+        if record["verdict"] == "pass" and record.get("conductor_checks"):
+            try:
+                state, detail = _base_ci_state(gh, ctx.policy(project).get("base", "main"))
+            except Exception as exc:  # unreadable evidence is retryable, never approval
+                if not _owned(ctx, project, n, epoch):
+                    return True
+                record.update(phase="waiting", inconclusive=record["inconclusive"] + 1,
+                              practices_error=redact.redact(str(exc)))
+                save(led, project, n, record)
+                return True
+            if state == "failure":
+                record["verdict"] = "fail"
+            record["practices_evidence"] = record.get("practices_evidence", []) + [
+                "Conductor-verified GitHub criteria (" + "; ".join(record["conductor_checks"])
+                + f"): base CI {state} — {detail}"]
+            save(led, project, n, record)
         marker = f"<!-- mahler:no-change claim={record['claim_run']} review={record['run_id']} -->"
         if not any(marker in c["body"] for c in gh.issue_comments(n)):
             if not _owned(ctx, project, n, epoch):
@@ -188,8 +239,8 @@ def advance(ctx, project, item):
                     return True
                 record["phase"] = "rejected"
                 save(led, project, n, record)
-                retry_or_fail(ctx, project, n, led.item(project, n), None,
-                              "no-change claim rejected: " + " | ".join(record["review_evidence"] + record.get("practices_evidence", [])),
+                retry_or_fail(ctx, project, n, led.item(project, n), "review_rejected",
+                              "review_rejected: no-change claim rejected: " + " | ".join(record["review_evidence"] + record.get("practices_evidence", [])),
                               run=led.run(record["run_id"]))
             led.release(project, n, holder=CONDUCTOR)
         elif record.get("owner_question"):
@@ -241,6 +292,8 @@ def advance(ctx, project, item):
         ctx.cfg, led, pol, "review", pin, busy, size=size, exclude=exclude, min_tier=min_tier,
         scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines)
     if platform:
+        record["github_facts"] = github_facts(ctx.gh(project), pol.get("base", "main"))
+        save(led, project, n, record)
         ship.start(ctx, project, {**item, "claim_base_sha": sha}, "review", platform,
                    handoff_from=(CONDUCTOR, epoch), size=size)
     return True

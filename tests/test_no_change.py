@@ -75,6 +75,43 @@ class ClaimTests(unittest.TestCase):
         self.gh.close_issue.assert_called_once_with(5)
         self.assertEqual(self.led.con.execute("SELECT count(*) FROM release_items").fetchone()[0], 0)
 
+    def test_github_only_criteria_pass_when_conductor_base_ci_green(self):
+        e = self.ending(json.dumps({"mode": "claim", "evidence": ["source ok"], "human_checks": [],
+                                    "conductor_checks": ["CI green on main", "PR merged"]}))
+        no_change.finish(e)
+        self.assertEqual(self.read()["conductor_checks"], ["CI green on main", "PR merged"])
+        self.gh.base_checks.return_value = [{"name": "t", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        self.advance()
+        self.advance()
+        self.assertEqual(self.led.item("x", 5)["state"], "done")
+        self.assertIn("Conductor-verified", self.comments[0])
+
+    def test_conductor_check_fails_when_base_ci_red_and_is_not_ci_failed(self):
+        from mahler import failures
+        e = self.ending(json.dumps({"mode": "claim", "evidence": ["source ok"], "human_checks": [],
+                                    "conductor_checks": ["CI green on main"]}))
+        no_change.finish(e)
+        self.gh.base_checks.return_value = [{"name": "t", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        with mock.patch.object(finalize, "retry_or_fail") as retry:
+            self.advance()
+        self.assertEqual(self.read()["phase"], "rejected")
+        self.gh.close_issue.assert_not_called()
+        self.assertEqual(failures.failure_class(retry.call_args[0][4]), "review_rejected")
+
+    def test_rejection_reason_is_review_rejected_even_if_evidence_mentions_ci(self):
+        from mahler import failures
+        self.verdict("fail")
+        self.record["review_evidence"] = ["CI on main is red"]
+        self.save()
+        with mock.patch.object(finalize, "retry_or_fail") as retry:
+            self.advance()
+        self.assertEqual(failures.failure_class(retry.call_args[0][4]), "review_rejected")
+
+    def test_github_facts_collected_for_reviewer(self):
+        self.gh.base_checks.return_value = [{"name": "t", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        facts = no_change.github_facts(self.gh, "release")
+        self.assertIn("success", facts.lower())
+
     def test_fail_charges_once_and_returns_to_build(self):
         self.verdict("fail")
         self.advance()
