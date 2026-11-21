@@ -147,7 +147,11 @@ class PostMergeTests(unittest.TestCase):
     @mock.patch("mahler.notify.send", return_value=True)
     def test_workflow_failure_dedupes_against_existing_open_issue(self, ping):
         self.workflow_setup()
-        self.led.upsert_item("p", 83, title="Deploy sync backend on main fails npm audit")
+        self.led.upsert_item(
+            "p", 83,
+            title="Deploy sync backend on main fails npm audit",
+            issue_body="Tracked run: https://github.com/x/y/actions/runs/10",
+        )
         self.gh.issue_state.return_value = "OPEN"
         self.gh.workflow_runs_for_commit.return_value = [self.workflow()]
         self.tick()
@@ -195,7 +199,8 @@ class PostMergeTests(unittest.TestCase):
         self.led.upsert_item(
             "p", 83,
             title="Sync backend deploy on main fails npm audit (picomatch high advisory)",
-            issue_body="The main deployment fails npm audit.",
+            issue_body="The main deployment fails npm audit.\n"
+                       "Tracked run: https://github.com/x/y/actions/runs/44166202813",
         )
         self.led.set_state(
             "p", 83, "needs_you",
@@ -259,7 +264,11 @@ class PostMergeTests(unittest.TestCase):
     @mock.patch("mahler.notify.send", return_value=True)
     def test_workflow_green_rechecks_and_resumes_needs_you_item(self, ping):
         self.workflow_setup()
-        self.led.upsert_item("p", 83, title="Deploy sync backend on main fails npm audit")
+        self.led.upsert_item(
+            "p", 83,
+            title="Deploy sync backend on main fails npm audit",
+            issue_body="Tracked run: https://github.com/x/y/actions/runs/10",
+        )
         self.led.set_state("p", 83, "needs_you", sorted_at=iso(NOW))
         self.gh.issue_state.return_value = "OPEN"
         self.gh.workflow_runs_for_commit.return_value = [self.workflow(conclusion="success")]
@@ -273,6 +282,30 @@ class PostMergeTests(unittest.TestCase):
         for evidence in (SHA, "/actions/runs/10", "main", "success"):
             self.assertIn(evidence, body)
         self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='workflow_recovered'")), 1)
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_green_ci_does_not_clear_unrelated_review_followup(self, ping):
+        self.workflow_setup()
+        self.led.upsert_item(
+            "p", 84,
+            title="CI review follow-up: test fails on exact base origin/main",
+            issue_body="The review follow-up mentions CI behavior.",
+        )
+        self.led.set_state(
+            "p", 84, "needs_you",
+            question="Should the CI test be changed?",
+            sorted_at=iso(NOW),
+        )
+        self.gh.issue_state.return_value = "OPEN"
+        self.gh.workflow_runs_for_commit.return_value = [
+            self.workflow(name="CI", conclusion="success")
+        ]
+
+        self.tick()
+        self.tick()
+
+        self.assertEqual(self.led.item("p", 84)["state"], "needs_you")
+        self.gh.comment_create.assert_not_called()
 
     @mock.patch("mahler.notify.send", return_value=True)
     def test_workflow_matching_excludes_unrelated_and_closed_items(self, ping):
