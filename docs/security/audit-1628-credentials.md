@@ -98,7 +98,15 @@ Tests were written and run before the report; they pass against the audited
 runtime. The defect reproduction is retained separately rather than making a
 passing regression contract out of unsafe behavior.
 
-Verification results will be recorded below after all required commands finish.
+Verification results from CI at reviewed head
+`8aae52219967537acb065d8f3ceb8f656130d67d` (review run 15108):
+
+- `python3 -m mahler.repo_guard`: passed (exit 0).
+- `python3 -m unittest discover -s tests`: passed, 3,846 tests.
+- `python3 tests/run_random.py 417782092`: passed, 3,846 tests;
+  randomized seed `417782092`.
+- `python3 -X dev tests/run_strict.py`: passed, 3,846 tests.
+
 Passing tests are bounded evidence, not proof of absence of vulnerabilities.
 No manual owner acceptance is needed; live provisioning, process inspection and
 race/ACL behavior remain untested limitations, not passes.
