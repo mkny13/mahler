@@ -91,7 +91,17 @@ def libpq_env(url):
 def _scrub(text, secret):
     text = text or ""
     if secret:
-        text = text.replace(secret, "<url>")
+        secrets = {secret}
+        try:
+            url = urlparse(secret)
+            for value in (url.username, url.password):
+                if value:
+                    secrets.update((value, unquote(value)))
+        except ValueError:
+            pass  # Still scrub the exact secret if the URL is malformed.
+        # Replace the URL before its parts, including standalone PG* values.
+        for value in sorted(secrets, key=len, reverse=True):
+            text = text.replace(value, "<url>")
     return re.sub(r"postgres(?:ql)?://\S+", "<url>", text)
 
 

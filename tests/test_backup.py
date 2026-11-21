@@ -68,6 +68,30 @@ class BackupTests(unittest.TestCase):
             backup.backup_postgres("gw", self.spec, root=self.root)
         self.assertNotIn("s3cret", str(cm.exception))
 
+    def test_standalone_credentials_are_not_disclosed_by_failed_dump(self):
+        # Synthetic credentials only; the wrapper attempts to disclose its PG* env.
+        url = "postgresql://fake%20user:fake%40password@db.example/db"
+        with open(self.env_file, "w") as fh:
+            fh.write(f'DATABASE_URL_UNPOOLED="{url}"\n')
+        self.spec["pg_dump"] = script(
+            self.tmp.name, "leaky_dump",
+            '#!/bin/sh\nprintf "%s\\n" "$PGUSER" "$PGPASSWORD" >&2\nexit 1\n')
+        with self.assertRaises(backup.BackupError) as cm:
+            backup.backup_postgres("gw", self.spec, root=self.root)
+        message = str(cm.exception)
+        for value in (url, "fake user", "fake@password"):
+            self.assertFalse(value in message, "credential disclosure in backup error")
+        self.assertEqual(message, "pg_dump failed: <url>\n<url>")
+        self.assertEqual(os.listdir(os.path.join(self.root, "gw")), [])
+
+    def test_scrub_encoded_and_decoded_credentials(self):
+        url = "postgresql://fake%20user:fake%40password@db.example/db"
+        text = f"failure {url} fake%20user fake user fake%40password fake@password"
+        self.assertTrue(backup._scrub(text, url) == "failure " + " ".join(["<url>"] * 5),
+                        "URL or standalone credential was not scrubbed")
+        self.assertEqual(backup._scrub("failure", "postgresql://db.example/db"), "failure")
+        self.assertEqual(backup._scrub(None, ""), "")
+
     def test_pre_existing_loose_directory_is_tightened(self):
         dest = os.path.join(self.root, "gw")
         os.makedirs(dest, mode=0o755)
