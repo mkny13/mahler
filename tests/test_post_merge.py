@@ -698,6 +698,7 @@ class PostMergeTests(unittest.TestCase):
         self.register(sha=merge_sha)
 
         self.tick()
+        self.tick()
         row = self.row(sha=merge_sha)
         self.assertEqual((row["status"], row["phase"]), ("pending", "live"))
         self.assertEqual(row["summary"], "awaiting daemon self-update")
@@ -733,6 +734,7 @@ class PostMergeTests(unittest.TestCase):
         self.register(sha=merge_sha)
 
         self.tick()
+        self.tick()
         row = self.row(sha=merge_sha)
         from mahler.ledger import parse
         # First deadline passes -> defers
@@ -747,6 +749,16 @@ class PostMergeTests(unittest.TestCase):
         row = self.row(sha=merge_sha)
         self.assertEqual(row["status"], "FAIL")
         self.assertEqual(row["failure_code"], "awaiting_self_update")
+
+    def test_mahler_live_unknown_identity_still_times_out(self):
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="mahler", live_command="")
+        self.tick()
+        from mahler.ledger import parse
+        self.now = parse(self.row()["deadline_at"])
+        with mock.patch("mahler.launch_health.exact_live", return_value=None):
+            self.tick()
+        self.assertEqual(self.row()["failure_code"], "timeout")
 
     def test_provider_errors_retry_until_original_deadline_and_isolate_projects(self):
         self.cfg["projects"]["p"]["post_merge"].update(
