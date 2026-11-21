@@ -275,7 +275,7 @@ def _observe_live(ctx, row, policy):
     from .gh import classify_deployment_lookup_error
     from .ledger import parse
     remaining = (parse(row["deadline_at"]) - ctx.led.now()).total_seconds()
-    timeout = min(5, max(.01, remaining / 2))
+    timeout = min(5, max(.01, remaining / 2)) if remaining > 0 else 5
     reason = "exact live identity not yet verified"
     artifact = None
     try:
@@ -289,7 +289,15 @@ def _observe_live(ctx, row, policy):
     except Exception as exc:
         # Provider/auth/JSON failures are retryable, without retaining payloads.
         reason = classify_deployment_lookup_error(exc)
-    if ctx.led.now() >= parse(row["deadline_at"]):
+    if artifact is launch_health.AWAITING_SELF_UPDATE:
+        if ctx.led.now() >= parse(row["deadline_at"]):
+            if not ctx.led.defer_post_merge_self_update(
+                    row["project"], row["number"], row["merge_sha"]):
+                _fail(ctx, {**dict(row), "summary": "awaiting daemon self-update"},
+                      "awaiting_self_update")
+        else:
+            _change(ctx, row, summary="awaiting daemon self-update")
+    elif ctx.led.now() >= parse(row["deadline_at"]):
         _fail(ctx, {**dict(row), "summary": reason}, "timeout")
     elif artifact:
         _change(ctx, row, phase="smoke", live_sha=row["merge_sha"], artifact_ref=artifact)
@@ -330,6 +338,9 @@ def _pass_on_live_proof(ctx, row, policy):
 
 def _advance(ctx, row, policy):
     from .ledger import parse
+    if row["phase"] == "live" and policy["post_merge"]["live_strategy"] == "mahler":
+        _observe_live(ctx, row, policy)
+        return
     if ctx.led.now() >= parse(row["deadline_at"]):
         _fail(ctx, row, "timeout")
         return
@@ -504,9 +515,10 @@ def _reprobe(ctx, name):
     except Exception as exc:
         from .gh import classify_deployment_lookup_error
         reason = classify_deployment_lookup_error(exc)
-    if not artifact:
+    if not isinstance(artifact, str) or not artifact:
         _record_probe(ctx, name, reason, policy)
-    return bool(artifact)
+        return False
+    return True
 
 
 def _recover_live(ctx, row, policy):
@@ -523,7 +535,7 @@ def _recover_live(ctx, row, policy):
             env=config.run_env(ctx.cfg, config.gh_account_of(policy)))
     except Exception:
         return False
-    if not artifact:
+    if not isinstance(artifact, str) or not artifact:
         return False
     return ctx.led.reopen_post_merge_live(row["project"], row["number"], row["merge_sha"])
 

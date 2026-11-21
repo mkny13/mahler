@@ -9,7 +9,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, post_merge, scheduler
+from mahler import config, launch_health, post_merge, scheduler
 from mahler.gh import completion_evidence
 from mahler.ledger import Ledger, iso
 
@@ -554,12 +554,13 @@ class PostMergeTests(unittest.TestCase):
         self.failed_mahler_live()
         original = dict(self.row())
         with mock.patch.object(post_merge, "_remediate") as remediate:
-            for result in (None, "", RuntimeError("unavailable")):
+            for result in (None, "", launch_health.AWAITING_SELF_UPDATE,
+                           RuntimeError("unavailable")):
                 with mock.patch("mahler.launch_health.exact_live",
                                 side_effect=[result]):
                     self.tick()
                 self.assertEqual(dict(self.row()), original)
-            self.assertEqual(remediate.call_count, 3)
+            self.assertEqual(remediate.call_count, 4)
 
     def test_recovered_live_cannot_reopen_after_second_timeout(self):
         self.failed_mahler_live()
@@ -668,6 +669,7 @@ class PostMergeTests(unittest.TestCase):
         self.assertFalse(list(self.root.rglob("report.md")))
 
     def _setup_app_git(self):
+        self.led.con.execute("DELETE FROM post_merge_checks")
         app = Path(config.STATE) / "app"
         app.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "init"], cwd=app, check=True, capture_output=True)
@@ -702,6 +704,7 @@ class PostMergeTests(unittest.TestCase):
         row = self.row(sha=merge_sha)
         self.assertEqual((row["status"], row["phase"]), ("pending", "live"))
         self.assertEqual(row["summary"], "awaiting daemon self-update")
+        self.gh.create_issue.assert_not_called()
 
         from mahler.ledger import parse
         original_deadline = row["deadline_at"]
@@ -711,6 +714,8 @@ class PostMergeTests(unittest.TestCase):
         self.assertEqual((row["status"], row["phase"]), ("pending", "live"))
         self.assertEqual(row["summary"], "awaiting daemon self-update")
         self.assertGreater(row["deadline_at"], original_deadline)
+        self.gh.create_issue.assert_not_called()
+        self.restart()
 
         subprocess.run(["git", "checkout", "-q", "--detach", merge_sha], cwd=app, check=True)
         (Path(config.STATE) / "launch_ok").write_text(merge_sha)
@@ -759,6 +764,13 @@ class PostMergeTests(unittest.TestCase):
         with mock.patch("mahler.launch_health.exact_live", return_value=None):
             self.tick()
         self.assertEqual(self.row()["failure_code"], "timeout")
+
+    def test_awaiting_self_update_is_not_reprobe_success(self):
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="mahler", live_command="")
+        with mock.patch("mahler.launch_health.exact_live",
+                        return_value=launch_health.AWAITING_SELF_UPDATE):
+            self.assertFalse(post_merge._reprobe(self.ctx, "p"))
 
     def test_provider_errors_retry_until_original_deadline_and_isolate_projects(self):
         self.cfg["projects"]["p"]["post_merge"].update(

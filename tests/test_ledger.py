@@ -84,7 +84,7 @@ class LeaseTests(unittest.TestCase):
 
     def test_self_update_deferral_is_fenced_and_once_only(self):
         sha = "a" * 40
-        row = self.led.create_post_merge_check("p", 1, sha, self.post_merge_policy())
+        self.led.create_post_merge_check("p", 1, sha, self.post_merge_policy())
         self.assertFalse(self.led.defer_post_merge_self_update("p", 1, sha))
         self.led.update_post_merge_check("p", 1, sha, expected_phase="deploy", phase="live")
         self.assertFalse(self.led.defer_post_merge_self_update("p", 1, sha))

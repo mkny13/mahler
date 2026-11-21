@@ -13,10 +13,11 @@ from .ledger import iso, parse
 from .redact import redact
 
 CANARY_INTERVAL = timedelta(minutes=30)
+AWAITING_SELF_UPDATE = object()
 
 
 def exact_live(sha, *, timeout=5, env=None):
-    """Return mahler:<proven-sha> only for a healthy, launch-proven installed HEAD.
+    """Return a live artifact, AWAITING_SELF_UPDATE, or None.
 
     Observe $MAHLER_HOME/app, never the task checkout or known_good alone.
     launch_ok and the installed HEAD must agree on one full lowercase SHA,
@@ -41,17 +42,25 @@ def exact_live(sha, *, timeout=5, env=None):
                               env=child_env, capture_output=True, text=True, timeout=timeout)
         if head.returncode or head.stdout.strip() != proven:
             return None
+        awaiting = False
         if proven != sha:
             contains = subprocess.run(["git", "merge-base", "--is-ancestor", sha, proven],
                                       cwd=app, env=child_env, capture_output=True,
                                       timeout=timeout)
             if contains.returncode:
-                return None
+                if contains.returncode != 1:
+                    return None
+                ahead = subprocess.run(["git", "merge-base", "--is-ancestor", proven, sha],
+                                       cwd=app, env=child_env, capture_output=True,
+                                       timeout=timeout)
+                if ahead.returncode:
+                    return None
+                awaiting = True
         health = subprocess.run([str(app / "bin" / "mahler"), "version"], cwd=app,
                                 env=child_env, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, timeout=timeout)
         if health.returncode == 0 and marker.read_text().strip() == proven:
-            return f"mahler:{proven}"
+            return AWAITING_SELF_UPDATE if awaiting else f"mahler:{proven}"
     except (OSError, subprocess.SubprocessError):
         pass
     return None
