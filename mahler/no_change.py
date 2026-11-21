@@ -1,6 +1,7 @@
 """Independent review of clean zero-ahead DONE claims, without a PR."""
 
 import json
+import re
 
 from . import config, practices_audit, redact, router, runner, waits
 from .ledger import CONDUCTOR
@@ -29,6 +30,34 @@ def begin(e):
                 summary=e.rest or e.item["title"])
 
 
+PR_KINDS = {"pr_merged": "MERGED", "pr_closed": "CLOSED", "pr_open": "OPEN"}
+
+
+def _valid_check(c):
+    """A GitHub-side criterion the conductor can actually verify: base CI or a PR's state."""
+    if not isinstance(c, dict) or not isinstance(c.get("text"), str) or not c["text"].strip():
+        return False
+    if c.get("kind") == "base_ci":
+        return True
+    return (c.get("kind") in PR_KINDS and isinstance(c.get("pr"), int)
+            and not isinstance(c["pr"], bool) and c["pr"] > 0)
+
+
+def _verify_checks(gh, base, checks):
+    """Return (failed, lines): the conductor's own read of each declared criterion."""
+    failed, lines = False, []
+    for c in checks:
+        if c["kind"] == "base_ci":
+            state, detail = _base_ci_state(gh, base)
+            ok, fact = state == "success", f"base CI {state} — {detail}"
+        else:
+            state = (gh.pr_view(c["pr"]).get("state") or "").upper()
+            ok, fact = state == PR_KINDS[c["kind"]], f"PR #{c['pr']} is {state}"
+        failed = failed or not ok
+        lines.append(f"Conductor-verified {'OK' if ok else 'FAILED'}: {c['text']} ({fact})")
+    return failed, lines
+
+
 def parse_payload(text):
     payload = json.loads(text or "")
     if not isinstance(payload, dict) or payload.get("mode") != "claim":
@@ -45,8 +74,7 @@ def parse_payload(text):
             not isinstance(c, str) or c not in config.PRACTICES_AUDIT_CHECKS for c in pending)):
         raise ValueError("invalid pending_practices_checks")
     conductor = payload.get("conductor_checks", [])
-    if (not isinstance(conductor, list)
-            or any(not isinstance(c, str) or not c.strip() for c in conductor)):
+    if not isinstance(conductor, list) or any(not _valid_check(c) for c in conductor):
         raise ValueError("invalid conductor_checks")
     question = payload.get("owner_question")
     if question is not None and (not isinstance(question, str) or not question.strip()):
@@ -121,6 +149,19 @@ def github_facts(gh, base):
     except Exception as exc:  # advisory for the reviewer; the verdict gate re-reads it
         return f"CI state on {base}: unavailable ({redact.redact(str(exc))})"
     return f"CI state on {base} (conductor-verified): {state} — {detail}"
+
+
+def pr_facts(gh, text):
+    """State and body of PRs the claim mentions, read by the conductor (best effort)."""
+    out = []
+    for num in list(dict.fromkeys(re.findall(r"#(\d{1,7})", text or "")))[:5]:
+        try:
+            view = gh.pr_view(int(num))
+        except Exception:
+            continue  # an issue number, or unreadable: nothing to assert
+        out.append(f"PR #{num} (conductor-verified): state {view.get('state')}, "
+                   f"mergedAt {view.get('mergedAt')}, body: {redact.redact((view.get('body') or '')[:1500])}")
+    return out
 
 
 def fetched_base(ctx, project):
@@ -206,7 +247,8 @@ def advance(ctx, project, item):
             save(led, project, n, record)
         if record["verdict"] == "pass" and record.get("conductor_checks"):
             try:
-                state, detail = _base_ci_state(gh, ctx.policy(project).get("base", "main"))
+                failed, lines = _verify_checks(gh, ctx.policy(project).get("base", "main"),
+                                               record["conductor_checks"])
             except Exception as exc:  # unreadable evidence is retryable, never approval
                 if not _owned(ctx, project, n, epoch):
                     return True
@@ -214,11 +256,9 @@ def advance(ctx, project, item):
                               practices_error=redact.redact(str(exc)))
                 save(led, project, n, record)
                 return True
-            if state == "failure":
+            if failed:
                 record["verdict"] = "fail"
-            record["practices_evidence"] = record.get("practices_evidence", []) + [
-                "Conductor-verified GitHub criteria (" + "; ".join(record["conductor_checks"])
-                + f"): base CI {state} — {detail}"]
+            record["practices_evidence"] = record.get("practices_evidence", []) + lines
             save(led, project, n, record)
         marker = f"<!-- mahler:no-change claim={record['claim_run']} review={record['run_id']} -->"
         if not any(marker in c["body"] for c in gh.issue_comments(n)):
@@ -292,7 +332,10 @@ def advance(ctx, project, item):
         ctx.cfg, led, pol, "review", pin, busy, size=size, exclude=exclude, min_tier=min_tier,
         scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines)
     if platform:
-        record["github_facts"] = github_facts(ctx.gh(project), pol.get("base", "main"))
+        gh = ctx.gh(project)
+        record["github_facts"] = "\n".join(
+            [github_facts(gh, pol.get("base", "main"))]
+            + pr_facts(gh, (record.get("evidence") or "") + " " + (record.get("build_evidence") or "")))
         save(led, project, n, record)
         ship.start(ctx, project, {**item, "claim_base_sha": sha}, "review", platform,
                    handoff_from=(CONDUCTOR, epoch), size=size)

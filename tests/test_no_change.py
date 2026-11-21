@@ -75,21 +75,42 @@ class ClaimTests(unittest.TestCase):
         self.gh.close_issue.assert_called_once_with(5)
         self.assertEqual(self.led.con.execute("SELECT count(*) FROM release_items").fetchone()[0], 0)
 
-    def test_github_only_criteria_pass_when_conductor_base_ci_green(self):
+    def _claim_checks(self, checks):
         e = self.ending(json.dumps({"mode": "claim", "evidence": ["source ok"], "human_checks": [],
-                                    "conductor_checks": ["CI green on main", "PR merged"]}))
+                                    "conductor_checks": checks}))
         no_change.finish(e)
-        self.assertEqual(self.read()["conductor_checks"], ["CI green on main", "PR merged"])
+
+    def test_github_only_criteria_pass_when_conductor_verifies_ci_and_pr(self):
+        checks = [{"kind": "base_ci", "text": "CI green on main"},
+                  {"kind": "pr_merged", "pr": 7, "text": "PR 7 merged"}]
+        self._claim_checks(checks)
+        self.assertEqual(self.read()["conductor_checks"], checks)
         self.gh.base_checks.return_value = [{"name": "t", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        self.gh.pr_view.return_value = {"state": "MERGED", "body": "b"}
         self.advance()
         self.advance()
         self.assertEqual(self.led.item("x", 5)["state"], "done")
+        self.gh.pr_view.assert_called_with(7)
         self.assertIn("Conductor-verified", self.comments[0])
+
+    def test_pr_criterion_false_is_rejected_not_accepted(self):
+        self._claim_checks([{"kind": "pr_merged", "pr": 7, "text": "PR 7 merged"}])
+        self.gh.pr_view.return_value = {"state": "CLOSED", "body": ""}
+        self.advance()
+        self.assertEqual(self.read()["phase"], "rejected")
+        self.gh.close_issue.assert_not_called()
+
+    def test_unverifiable_free_text_check_cannot_pass(self):
+        e = self.ending(json.dumps({"mode": "claim", "evidence": ["x"], "human_checks": [],
+                                    "conductor_checks": ["PR body mentions foo"]}))
+        no_change.finish(e)
+        self.assertEqual(self.read()["phase"], "waiting")
+        self.gh.close_issue.assert_not_called()
 
     def test_conductor_check_fails_when_base_ci_red_and_is_not_ci_failed(self):
         from mahler import failures
         e = self.ending(json.dumps({"mode": "claim", "evidence": ["source ok"], "human_checks": [],
-                                    "conductor_checks": ["CI green on main"]}))
+                                    "conductor_checks": [{"kind": "base_ci", "text": "CI green on main"}]}))
         no_change.finish(e)
         self.gh.base_checks.return_value = [{"name": "t", "status": "COMPLETED", "conclusion": "FAILURE"}]
         with mock.patch.object(finalize, "retry_or_fail") as retry:
