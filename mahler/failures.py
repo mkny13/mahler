@@ -180,7 +180,7 @@ def workflow_key(project, workflow, failure_code="actions_failed"):
 
 
 def tracks_workflow(item, workflow, branch):
-    """Match explicit run evidence or a named default-branch failure."""
+    """Match only explicit evidence that Mahler recorded this workflow."""
     text = "\n".join(str(row_get(item, k, "") or "")
                      for k in ("title", "issue_body", "question"))
     url = workflow.get("html_url")
@@ -190,12 +190,9 @@ def tracks_workflow(item, workflow, branch):
     if run_id is not None and re.search(r"(?<!\d)" + re.escape(str(run_id)) + r"(?!\d)",
                                         text):
         return True
-    name = workflow.get("name")
-    name_words = set(re.findall(r"\w+", str(name or "").casefold()))
-    text_words = set(re.findall(r"\w+", text.casefold()))
-    return bool(name_words and name_words <= text_words
-                and re.search(r"\b" + re.escape(branch) + r"\b", text, re.I)
-                and re.search(r"\b(fail(?:s|ed|ure|ing)?|red|timed.out|blocked)\b", text, re.I))
+    identity = workflow.get("workflow_id") or workflow.get("name")
+    return bool(identity and "<!-- mahler:post-merge-failure " in text
+                and re.search(r"\bworkflow=" + re.escape(str(identity)) + r"\b", text))
 
 
 def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
