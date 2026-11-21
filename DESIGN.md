@@ -952,7 +952,12 @@ are best-effort and never gate finalization or prompt construction.
   path must point to Mahler's primary checkout. This URL smoke does not accept
   the Mahler detector's `mahler:<sha>` artifact; its runtime smoke needs a separate
   command. Activation and live proof remain tracked in #1038.
-- **Exact built-in live detectors (mahler#746).** `live_strategy = "mahler"`
+- **Exact built-in live detectors (mahler#746).** The #1287 policy, reaffirmed
+  by the owner in #1604, supersedes #746's blanket production-only rejection.
+  The reconciled criterion is: Mahler and GitHub live detectors reject stale
+  and ambiguous targets; GitHub accepts explicitly configured Production and
+  rejects production-marked deployments for non-production targets.
+  This does not change the Mahler detector's separately specified identity rules. `live_strategy = "mahler"`
   or `"github"` requires an empty `live_command`; command mode remains available.
   The Mahler detector requires `launch_ok` and the installed `$MAHLER_HOME/app`
   HEAD to agree on one full SHA that equals or contains the requested merge SHA
@@ -968,7 +973,8 @@ are best-effort and never gate finalization or prompt construction.
   - GitHub uses the project's existing repository/account client and an exact
     configured environment. `prod`/`production` names (case-insensitive) do not
     constrain `production_environment`: Vercel reports false even for Production.
-    Other environments require `production_environment = false`. Production
+    Explicitly configured `prod`/`production` targets are valid;
+    other environments require `production_environment = false`. Production
     proves only the exact merge SHA, never a PR-head Preview deployment. It reads
     up to 100 environment deployments without filtering away newer SHAs, requires
     exactly one record for the merge SHA and requires that record to be newest.
