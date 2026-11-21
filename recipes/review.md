@@ -26,6 +26,19 @@ sensitivity check: state the exemption explicitly and do not require a historica
 git diff. When every criterion is satisfied, return
 `STATUS: REVIEW-PASS {"mode":"claim","evidence":["verified GitHub criteria and URLs"],"human_checks":[]}`.
 
+The claim evidence may include `github_facts`: GitHub-side facts (CI state on the
+base, state and body of PRs the claim mentions) that the conductor read itself. Treat them
+as conductor-verified evidence. You often cannot read GitHub (private repos, no token).
+Never fail a claim merely because a GitHub-side criterion is unreachable for you: judge
+the source, then declare each such criterion in an optional `conductor_checks` array in
+the REVIEW-PASS JSON, as objects the conductor can verify itself:
+`{"kind":"base_ci","text":"CI green on main"}` or
+`{"kind":"pr_merged"|"pr_closed"|"pr_open","pr":123,"text":"PR 123 merged"}`.
+The conductor re-reads them and rejects the claim if any is false; free-text entries are
+invalid. Judge PR-body content yourself from `github_facts`. If a Done-when was overtaken
+by events (a PR was merged where it said "closed as superseded"), accept the claim when
+the goal behind the criterion is met; do not fail it for the stale wording.
+
 For claims about existing repository implementation, use the exact checked-base ancestry and the issue's Done-when items to
 identify the existing change that makes the no-change claim true: use `git log` and
 `git blame` on the relevant implementation and test files, then diff the introducing

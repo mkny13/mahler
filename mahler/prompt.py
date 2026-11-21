@@ -332,7 +332,7 @@ def build(ctx, project, item, role, platform, prep, context=None):
                                    prep.get("lessons"))
     return render(role, claim_mode=bool(claim), claim_sha=claim.get("base_sha", ""),
                   claim_evidence=json.dumps({k: claim.get(k) for k in
-                                             ("claim_run", "evidence", "build_evidence", "legacy_evidence")}),
+                                             ("claim_run", "evidence", "build_evidence", "legacy_evidence", "github_facts")}),
                   number=item["number"], title=item["title"], repo=pol["repo"],
                   worktree=prep["worktree"], branch=prep["branch"] or "", base=base,
                   push_branch=prep.get("push_branch") or prep["branch"] or "",
