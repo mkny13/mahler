@@ -495,6 +495,33 @@ class ClineProviderTests(unittest.TestCase):
         self.assertEqual(router.candidates(cfg, "build", account="work"), ["work-jetstream"])
         self.assertEqual(router.candidates(cfg, "build", pin="work-jetstream"), [])
 
+class VibeStreamParsingTests(unittest.TestCase):
+    def test_vibe_stream_parsing(self):
+        # Create a temporary directory to hold the test file
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Define the path for the test file
+            test_file_path = os.path.join(temp_dir, "vibe_stream_test.ndjson")
+            
+            # Define the test data
+            test_data = [
+                {"type": "message", "role": "assistant", "sessionId": "12345", "content": [{"type": "text", "text": "STATUS: DONE Test completed"}]},
+                {"type": "effect", "title": "write_file", "sessionId": "12345", "detail": {"toolName": "write_file", "kind": "file_write", "input": {"filePath": "/tmp/test.txt", "content": "Hello, world!"}}, "state": {"status": "completed", "decision": "execute", "approvalSource": "bypass"}}
+            ]
+            
+            # Write the test data to the file
+            with open(test_file_path, "w") as f:
+                for record in test_data:
+                    f.write(json.dumps(record) + "\n")
+            
+            # Read and parse the file using the platforms.read_log function
+            result = platforms.read_log(test_file_path, "vibe")
+            
+            # Verify the parsing results
+            self.assertEqual(result["session_id"], "12345")
+            self.assertEqual(result["last_text"], "STATUS: DONE Test completed")
+            self.assertTrue(result["ok"])
+            self.assertIsNone(result["last_error"])
+
 if __name__ == "__main__":
     unittest.main()
 
