@@ -67,6 +67,20 @@ the deadline is a failure, never a pass. There is no pass/UAT control; the optio
 button stays. Summaries, evidence paths and command output never reach the browser.
 Tests: `tests/test_console_uat.py` (`PostMergeStatusTests`).
 
+## Parent #740 evidence (#1605)
+
+The #748 merge `c70a0d88fe4dbbc5e93f573d995244357009bc40` is recorded as
+successful CI and after #741 audit commit `b6ae20e1fccaf91973c1b049552f4d74371deb51`
+(the merge-base check passed).
+The phone and desktop Deploying, Live and Deploy failed states are covered by
+`tests/test_console_uat.py::PostMergeStatusTests`.
+
+The recorded live journeys satisfy the parent requirement: Mahler: PASS at
+`da2ab9edaf998cccc65c43b77ee5448d0a27cf76`, and Groundwork: PASS (target:
+Production) at `83a70594bc246e76b698958d54fd1be050eda900`. Groundwork is the
+exactly one of Groundwork/Couch Tour selected for this criterion; Couch Tour
+Preview remains disabled and is not counted.
+
 ## Live proofs (recorded 2026-10-28)
 
 | Date | Project | Issue/PR | Merge SHA | Evidence reference | Result |
