@@ -146,8 +146,14 @@ symlink/untracked paths, admission/comment filtering and mutation receipts).
 
 ## Verification results
 
-Pending completion of the four required repository commands; results and random
-seed will be recorded before the final commit.
+CI at reviewed head `8a3491b9910f1b3993be280fa23a833596ecc6c2`
+(review run 15136) recorded the following verification outcomes:
+
+- `python3 -m mahler.repo_guard`: passed (exit 0).
+- `python3 -m unittest discover -s tests`: passed, 3,858 tests.
+- `python3 tests/run_random.py 393288850`: passed, 3,858 tests;
+  randomized seed `393288850`.
+- `python3 -X dev tests/run_strict.py`: passed, 3,858 tests.
 
 ## Handoff
 
