@@ -36,6 +36,14 @@ environment; inherited PG settings not replaced by the URL may also influence
 libpq. `pg_restore --list` gets ordinary inherited environment, not the explicit
 dump environment. No claim is made that all credential exposure is eliminated.
 
+`runner.prepare` also symlinks configured `link` entries into the worktree;
+its comment says local services only, but this function does not inspect their
+contents or enforce that restriction. Linked `.env` confidentiality therefore
+depends on trusted configuration and worktree permissions. This audit did not
+inspect any real linked files or establish that production credentials cannot
+be linked. General subprocess sanitization, denylist and dependency auditing
+remain outside this child issue's six bounded cases.
+
 ## Finding: decoded standalone backup passwords escape output scrubbing
 
 Safe reproduction (mock subprocess only; emits a boolean, never the value):
