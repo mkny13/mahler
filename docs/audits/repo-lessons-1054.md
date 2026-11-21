@@ -115,4 +115,18 @@ historical abbreviated snapshot and gate selectors) were executed separately as
 17 consolidation integration/workflow tests and the previously mapped tests for
 criteria 1–3. Tests use temporary repositories and isolated ledgers.
 
-Current repository gates: results recorded below after completion.
+Current repository gates (Python 3.14.10; unchanged source at the audited SHA,
+with this documentation update):
+
+| Command | Result | Exit |
+|---|---|---|
+| `python3 -m mahler.repo_guard` | no violations | 0 |
+| `python3 -m unittest discover -s tests` | Ran 3823 tests in 293.535s; OK (skipped=2) | 0 |
+| `python3 tests/run_random.py` | seed `2019376994`; Ran 3823 tests in 305.231s; OK (skipped=2) | 0 |
+| `python3 -X dev tests/run_strict.py` | Ran 3823 tests in 320.290s; OK (skipped=2) | 0 |
+
+Criterion 4 remains **SUPPORTED** on the current audited source. The earlier
+#1070 and #1076 gaps are resolved by the merged fixes above; no new follow-up
+is needed. The admitted parent body already ticks all five criteria; the
+conductor can reconcile the stale remaining-criterion marker using this report.
+Remaining manual checks: none. Owner-only decisions: none.
