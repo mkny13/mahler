@@ -667,6 +667,87 @@ class PostMergeTests(unittest.TestCase):
         self.assertEqual(self.row()["failure_code"], "timeout")
         self.assertFalse(list(self.root.rglob("report.md")))
 
+    def _setup_app_git(self):
+        app = Path(config.STATE) / "app"
+        app.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=app, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=app, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=app, check=True)
+        (app / "f").write_text("1")
+        subprocess.run(["git", "add", "."], cwd=app, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "1"], cwd=app, check=True, capture_output=True)
+        older_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=app, capture_output=True, text=True).stdout.strip()
+        (app / "f").write_text("2")
+        subprocess.run(["git", "add", "."], cwd=app, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "2"], cwd=app, check=True, capture_output=True)
+        merge_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=app, capture_output=True, text=True).stdout.strip()
+        subprocess.run(["git", "checkout", "-q", "--detach", older_sha], cwd=app, check=True)
+        bin_dir = app / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        mahler_bin = bin_dir / "mahler"
+        mahler_bin.write_text("#!/bin/sh\nexit 0\n")
+        mahler_bin.chmod(0o755)
+        return app, older_sha, merge_sha
+
+    def test_mahler_self_update_deferral(self):
+        app, older_sha, merge_sha = self._setup_app_git()
+        (Path(config.STATE) / "launch_ok").write_text(older_sha)
+
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="mahler", live_command="")
+        self.register(sha=merge_sha)
+
+        self.tick()
+        row = self.row(sha=merge_sha)
+        self.assertEqual((row["status"], row["phase"]), ("pending", "live"))
+        self.assertEqual(row["summary"], "awaiting daemon self-update")
+
+        from mahler.ledger import parse
+        original_deadline = row["deadline_at"]
+        self.now = parse(original_deadline) + timedelta(seconds=1)
+        self.tick()
+        row = self.row(sha=merge_sha)
+        self.assertEqual((row["status"], row["phase"]), ("pending", "live"))
+        self.assertEqual(row["summary"], "awaiting daemon self-update")
+        self.assertGreater(row["deadline_at"], original_deadline)
+
+        subprocess.run(["git", "checkout", "-q", "--detach", merge_sha], cwd=app, check=True)
+        (Path(config.STATE) / "launch_ok").write_text(merge_sha)
+
+        self.tick()
+        row = self.row(sha=merge_sha)
+        self.assertEqual(row["phase"], "smoke")
+        self.assertEqual(row["live_sha"], merge_sha)
+        self.assertEqual(row["artifact_ref"], "mahler:" + merge_sha)
+
+        self.tick()
+        row = self.row(sha=merge_sha)
+        self.assertEqual(row["status"], "PASS")
+
+    def test_mahler_self_update_deferral_eventual_timeout(self):
+        app, older_sha, merge_sha = self._setup_app_git()
+        (Path(config.STATE) / "launch_ok").write_text(older_sha)
+
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="mahler", live_command="")
+        self.register(sha=merge_sha)
+
+        self.tick()
+        row = self.row(sha=merge_sha)
+        from mahler.ledger import parse
+        # First deadline passes -> defers
+        self.now = parse(row["deadline_at"]) + timedelta(seconds=1)
+        self.tick()
+        row = self.row(sha=merge_sha)
+        self.assertEqual(row["status"], "pending")
+
+        # Second deadline passes -> fails with awaiting_self_update
+        self.now = parse(row["deadline_at"]) + timedelta(seconds=1)
+        self.tick()
+        row = self.row(sha=merge_sha)
+        self.assertEqual(row["status"], "FAIL")
+        self.assertEqual(row["failure_code"], "awaiting_self_update")
+
     def test_provider_errors_retry_until_original_deadline_and_isolate_projects(self):
         self.cfg["projects"]["p"]["post_merge"].update(
             deploy_strategy="watch", live_strategy="github", live_command="")
