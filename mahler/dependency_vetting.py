@@ -13,8 +13,39 @@ from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
 
+MIN_AGE = timedelta(days=14)
+
+
 class VettingError(RuntimeError):
     """Dependency evidence is incomplete or could not be obtained."""
+
+    def __init__(self, message, *, transient=False):
+        super().__init__(message)
+        self.transient = transient
+
+
+class TransientVettingError(VettingError):
+    """Transient lookup failure from registry/advisory query that should be retried."""
+
+    def __init__(self, message):
+        super().__init__(message, transient=True)
+
+
+def is_transient_error(exc_or_detail):
+    if isinstance(exc_or_detail, VettingError) and getattr(exc_or_detail, "transient", False):
+        return True
+    if isinstance(exc_or_detail, str):
+        lower = exc_or_detail.lower()
+        return ("registry/advisory lookup failed:" in exc_or_detail
+                or "registry/advisory lookup returned http 429" in lower
+                or "registry/advisory lookup returned http 5" in lower
+                or "the read operation timed out" in lower
+                or "timed out" in lower
+                or "connection reset" in lower
+                or "connection refused" in lower
+                or "temporary failure in name resolution" in lower
+                or "missing maven artifact metadata" in lower)
+    return False
 
 
 @dataclass(frozen=True)
@@ -35,6 +66,7 @@ class Finding:
     advisories: tuple[str, ...]
     blocked: bool
     recent: bool
+    eligible_at: str | None = None
 
     def report(self):
         advisories = "; ".join(self.advisories) if self.advisories else "none"
@@ -43,6 +75,18 @@ class Finding:
                 f"{self.first_published}; publisher {self.publisher}; "
                 f"source {self.source}; advisories {advisories}"
                 f"{' [BLOCKED]' if self.blocked else ''}")
+
+
+class VetResult(tuple):
+    """2-tuple (findings, reason) with additional eligible_at metadata."""
+
+    def __new__(cls, findings, reason, eligible_at=None):
+        return super().__new__(cls, (findings, reason))
+
+    def __init__(self, findings, reason, eligible_at=None):
+        self.findings = findings
+        self.reason = reason
+        self.eligible_at = eligible_at
 
 
 _RELEVANT = re.compile(
@@ -831,12 +875,16 @@ def _request_json(url, *, data=None, opener=None):
         return _registry_request(
             request, opener, lambda response: json.loads(response.read().decode("utf-8")))
     except HTTPError as exc:
-        if exc.code == 404:
-            exc.close()
-            return None
+        code = exc.code
         exc.close()
-        raise VettingError(f"registry/advisory lookup returned HTTP {exc.code}") from None
-    except (URLError, TimeoutError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+        if code == 404:
+            return None
+        if code in (429, 500, 502, 503, 504):
+            raise TransientVettingError(f"registry/advisory lookup returned HTTP {code}") from None
+        raise VettingError(f"registry/advisory lookup returned HTTP {code}") from None
+    except (URLError, TimeoutError, OSError) as exc:
+        raise TransientVettingError(f"registry/advisory lookup failed: {exc}") from None
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise VettingError(f"registry/advisory lookup failed: {exc}") from None
 
 
@@ -865,7 +913,10 @@ def _metadata(dep, opener):
     try:
         result = _request_json(url, opener=opener)
     except VettingError as exc:
-        raise VettingError(f"{dep.ecosystem} {dep.name}@{dep.version}: {exc}") from None
+        msg = f"{dep.ecosystem} {dep.name}@{dep.version}: {exc}"
+        if getattr(exc, "transient", False):
+            raise TransientVettingError(msg) from None
+        raise VettingError(msg) from None
     if result is None:
         raise VettingError(f"package does not exist: {dep.ecosystem} {dep.name}@{dep.version}")
     if not isinstance(result, dict):
@@ -923,8 +974,12 @@ def _request_text(url, opener):
         exc.close()
         if code == 404:
             return None
+        if code in (429, 500, 502, 503, 504):
+            raise TransientVettingError(f"registry/advisory lookup returned HTTP {code}") from None
         raise VettingError(f"registry/advisory lookup returned HTTP {code}") from None
-    except (URLError, TimeoutError, OSError, UnicodeError) as exc:
+    except (URLError, TimeoutError, OSError) as exc:
+        raise TransientVettingError(f"registry/advisory lookup failed: {exc}") from None
+    except UnicodeError as exc:
         raise VettingError(f"registry/advisory lookup failed: {exc}") from None
 
 
@@ -1086,7 +1141,12 @@ def _pom_publication(url, dep, version, opener, repository):
         return date.astimezone(timezone.utc)
     except (HTTPError, URLError, TimeoutError, OSError, ValueError, TypeError) as exc:
         if isinstance(exc, HTTPError):
+            code = exc.code
             exc.close()
+            if code in (429, 500, 502, 503, 504):
+                raise TransientVettingError(f"missing {repository} publication date: {dep.name}@{version}") from None
+        elif isinstance(exc, (URLError, TimeoutError, OSError)):
+            raise TransientVettingError(f"missing {repository} publication date: {dep.name}@{version}") from None
         raise VettingError(f"missing {repository} publication date: {dep.name}@{version}") from None
 
 
@@ -1232,7 +1292,10 @@ def _advisories(dep, opener):
     try:
         result = _request_json("https://api.osv.dev/v1/query", data=payload, opener=opener)
     except VettingError as exc:
-        raise VettingError(f"{dep.ecosystem} {dep.name}@{dep.version}: {exc}") from None
+        msg = f"{dep.ecosystem} {dep.name}@{dep.version}: {exc}"
+        if getattr(exc, "transient", False):
+            raise TransientVettingError(msg) from None
+        raise VettingError(msg) from None
     if (result is None or not isinstance(result, dict)
             or not isinstance(result.get("vulns", []), list)
             or result.get("next_page_token")):
@@ -1252,7 +1315,7 @@ def vet(before, after, *, now=None, opener=None):
     """Vet changed direct dependencies; return (findings, blocking reason)."""
     dependencies = changed_dependencies(before, after)
     if not dependencies:
-        return (), None
+        return VetResult((), None, None)
     now = now or datetime.now(timezone.utc)
     findings = []
     for dependency in dependencies:
@@ -1270,20 +1333,33 @@ def vet(before, after, *, now=None, opener=None):
         try:
             published, publisher, source = _metadata(dependency, opener)
             advisories, advisory_block = _advisories(dependency, opener)
+        except VettingError:
+            raise
         except (TypeError, AttributeError, KeyError, ValueError) as exc:
             raise VettingError(f"{dependency.ecosystem} {dependency.name}@{dependency.version}: "
                                f"invalid registry/advisory evidence: {exc}") from None
-        recent = published > now - timedelta(days=14)
+        recent = published > now - MIN_AGE
         blocked = recent or advisory_block
+        dep_eligible = (published + MIN_AGE).isoformat() if (recent and not advisory_block) else None
         findings.append(Finding(dependency, published.isoformat(),
-                                publisher, source, advisories, blocked, recent))
+                                publisher, source, advisories, blocked, recent,
+                                eligible_at=dep_eligible))
     reasons = []
+    has_non_age_block = False
     for finding in findings:
         if finding.dependency.version is None:
             reasons.append(f"unresolved version: {finding.dependency.name}")
+            has_non_age_block = True
         if finding.recent:
             reasons.append(f"published less than 14 days ago: {finding.dependency.name}")
         if finding.blocked and any("(high)" in a or "(critical)" in a or "(unknown)" in a
                                    for a in finding.advisories):
             reasons.append(f"high/critical advisory: {finding.dependency.name}")
-    return tuple(findings), "; ".join(reasons) or None
+            has_non_age_block = True
+    blocking_reason = "; ".join(reasons) or None
+    eligible_at = None
+    if blocking_reason and not has_non_age_block:
+        recent_clean = [f.eligible_at for f in findings if f.recent and f.eligible_at]
+        if recent_clean:
+            eligible_at = max(recent_clean)
+    return VetResult(tuple(findings), blocking_reason, eligible_at)
