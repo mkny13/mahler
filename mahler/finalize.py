@@ -9,7 +9,6 @@ the item moves to whatever state its outcome implies.
 import json
 import os
 import re
-import subprocess
 import time
 from datetime import timedelta
 
@@ -1737,20 +1736,6 @@ def _try_cline_nudge(ctx, run, kind, log, pol):
 
 
 _try_nudge = _try_cline_nudge
-
-
-def _cline_session_id(worktree):
-    """Find the Cline session ID whose cwd matches the run's worktree.
-    `cline history --json` lists sessions with their cwd."""
-    try:
-        r = subprocess.run([platforms.cline_exe(), "history", "--json"],
-                           capture_output=True, text=True, timeout=15)
-        for entry in json.loads(r.stdout):
-            if entry.get("cwd") == worktree:
-                return entry.get("sessionId") or entry.get("id")
-    except (subprocess.SubprocessError, OSError, ValueError, TypeError):
-        pass
-    return None
 
 
 SETUP_FAIL_CAP = 2                                   # consecutive setup failures before needs_you
