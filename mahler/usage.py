@@ -369,6 +369,13 @@ def refresh_usage(ctx, projects):
             continue
         if pconf.get("kind") != "claude":
             continue
+        if account != config.DEFAULT_ACCOUNT:
+            acct = cfg.get("accounts", {}).get(account)
+            if acct is None:
+                raise ValueError(f"account {account!r} is not defined under [accounts]")
+            claude_config_dir = (acct.get("env") or {}).get("CLAUDE_CONFIG_DIR")
+            if not str(claude_config_dir or "").strip():
+                continue
         # D22: during the peak window, keep the zero-token OAuth reading and skip
         # the lean Claude probe (`probe_claude`, which costs tokens) — the window
         # is a headroom rule, not a quota rule, so a stale reading is still "over

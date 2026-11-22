@@ -462,7 +462,10 @@ class RoutingGroupsTests(unittest.TestCase):
         cfg = self.cfg()
         cfg['platforms']['work-builder'] = {'enabled': True, 'account': 'work'}
         cfg['groups']['work'] = ['work-builder']
-        cfg['accounts'] = {'work': {'routing': {'build': ['@work', '@free']}}}
+        cfg['accounts'] = {'work': {
+            'env': {'GH_CONFIG_DIR': '/tmp/gh-work'},
+            'routing': {'build': ['@work', '@free']},
+        }}
         self.assertEqual(router.candidates(cfg, 'build', account='work'), ['work-builder'])
         cfg['projects'] = {'app': {'account': 'work', 'account_mode': 'priority',
                                    'routing': {'build': ['@work']}}}

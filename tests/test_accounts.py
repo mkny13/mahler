@@ -25,7 +25,7 @@ def work_cfg(**projects):
         "concurrency": {"total": 3},
         "accounts": {"work": {
             "env": {"CLAUDE_CONFIG_DIR": "~/.claude-work", "COPILOT_HOME": "~/.copilot-work",
-                    "CODEX_HOME": "~/.codex-work"},
+                    "CODEX_HOME": "~/.codex-work", "GH_CONFIG_DIR": "~/.config/gh-work"},
             "routing": {"sort": ["claude-work"], "plan": ["claude-opus-work"],
                         "build": ["work-copilot", "codex-work", "claude-opus-work",
                                   "claude-work"]},
@@ -91,6 +91,30 @@ class ConfigTests(unittest.TestCase):
                 cfg = config.resolve_platforms(config._merge(config.DEFAULTS, section))
                 with self.assertRaisesRegex(ValueError, "not defined"):
                     config.validate_accounts(cfg)
+
+    def test_work_github_identity_requires_account_scoped_auth(self):
+        cfg = work_cfg()
+        cfg["accounts"]["work"]["env"].pop("GH_CONFIG_DIR", None)
+        with self.assertRaisesRegex(ValueError, "gh_account.*requires"):
+            config.validate_accounts(cfg)
+        cfg["accounts"]["work"]["env"]["GH_TOKEN"] = "work-token"
+        config.validate_accounts(cfg)
+        cfg["accounts"]["work"]["env"].pop("GH_TOKEN")
+        cfg["github_apps"] = {
+            "work": {
+                "app_id": 123,
+                "installation_id": 456,
+                "private_key_path": "/private/work.pem",
+            },
+        }
+        cfg["projects"]["acme"]["github_provider"] = "work"
+        config.validate_accounts(cfg)
+
+    def test_work_claude_account_requires_its_own_config_dir(self):
+        cfg = work_cfg()
+        cfg["accounts"]["work"]["env"].pop("CLAUDE_CONFIG_DIR")
+        with self.assertRaisesRegex(ValueError, "CLAUDE_CONFIG_DIR.*DESIGN D25"):
+            config.validate_accounts(cfg)
 
     def test_empty_size_bound_means_uncapped_and_bad_sizes_are_rejected(self):
         cfg = work_cfg()
@@ -303,6 +327,23 @@ class SlotAndUsageTests(unittest.TestCase):
         self.assertEqual(self.led.usage("claude"), {})
         copilot.assert_not_called()        # no work GitHub login: never read the personal one
         agy.assert_not_called()
+
+    def test_work_claude_without_config_dir_is_never_probed(self):
+        self.cfg["accounts"]["work"]["env"].pop("CLAUDE_CONFIG_DIR")
+        self.led.upsert_item("acme", 1, state="ready", priority=2)
+        projects = [config.project_policy(self.cfg, "acme")]
+        with mock.patch.object(usage, "refresh_codex"), \
+                mock.patch.object(platforms, "oauth_usage") as oauth, \
+                mock.patch.object(platforms, "probe_claude",
+                                  return_value=[("5h", 21.0, LATER), ("weekly", 22.0, LATER)]) as probe, \
+                mock.patch.object(platforms, "probe_copilot", return_value=[]), \
+                mock.patch.object(platforms, "probe_agy", return_value={}), \
+                mock.patch.object(router, "peak_state", return_value=(False, None)):
+            usage.refresh_usage(self.ctx, projects)
+        oauth.assert_not_called()
+        probe.assert_not_called()
+        self.assertEqual(self.led.usage("claude-work"), {})
+        self.assertEqual(self.led.usage("claude-opus-work"), {})
 
     def test_work_oauth_reads_the_configured_keychain_entry(self):
         self.cfg["accounts"]["work"]["claude_keychain_service"] = "Claude Code-credentials-abc"
