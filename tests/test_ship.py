@@ -3746,6 +3746,34 @@ class ShipTests(unittest.TestCase):
             ship._vet_pr_dependencies(self.ctx, "x", self.item(), 88, self.gh, self.gh.pr_view(88))
         self.assertEqual(len(self.gh.comments), comment_count)
 
+    def test_dependency_vetting_age_block_sets_next_at_to_eligible_time(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        before = {"package.json": '{"dependencies": {}}'}
+        after = {"package.json": '{"dependencies": {"safe-package": "1.2.3"}}'}
+        from mahler.ledger import parse, iso
+        eligible_str = iso(self.led.now() + timedelta(days=8))
+
+        from mahler.dependency_vetting import VetResult, Finding, Dependency
+        dep = Dependency("npm", "safe-package", "1.2.3", "1.2.3")
+        finding = Finding(dep, iso(self.led.now() - timedelta(days=6)), "Publisher", "https://example.test",
+                          (), True, True, eligible_at=eligible_str)
+        vet_res = VetResult((finding,), "published less than 14 days ago: safe-package", eligible_at=eligible_str)
+
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.gh, "dependency_files", return_value=(before, after)), \
+                mock.patch.object(ship.dependency_vetting, "vet", return_value=vet_res):
+            allowed = ship._vet_pr_dependencies(self.ctx, "x", self.item(), 88, self.gh, self.gh.pr_view(88))
+
+        self.assertFalse(allowed)
+        self.assertEqual(self.item()["state"], "waiting")
+        rec = self.wait_record()
+        self.assertEqual(rec["cause"], "dependency_vetting")
+        self.assertEqual(rec["wake"]["eligible_at"], eligible_str)
+        # next_at is set to the eligible time (plus margin), not the 15-minute backoff
+        self.assertGreaterEqual(parse(rec["next_at"]), parse(eligible_str))
+        self.assertGreater(parse(rec["next_at"]) - self.led.now(), timedelta(days=7))
+
+
     def test_review_missing_gate_evidence_suppresses_fix_and_parks(self):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
         finding_text = (
@@ -6389,6 +6417,23 @@ class DependencyPRTests(unittest.TestCase):
     def requests(self):
         return [json.loads(r['value']) for r in self.led.q(
             "SELECT value FROM kv WHERE key LIKE 'dependency-rebase:x:%'")]
+
+    def test_vet_gate_preserves_structured_transient_classification(self):
+        self.gh.dependency_files.return_value = ({}, {})
+        with mock.patch.object(ship.dependency_vetting, "changed_dependencies",
+                               return_value=[object()]):
+            for error, expected in (
+                    (ship.dependency_vetting.TransientVettingError("unexpected transport failure"), True),
+                    (ship.dependency_vetting.VettingError(
+                        "registry/advisory lookup failed: invalid JSON response"), False)):
+                with self.subTest(transient=expected), \
+                        mock.patch.object(ship.dependency_vetting, "vet", side_effect=error):
+                    detail, eligible_at = ship._vet_gate(
+                        self.ctx, "x", {"number": 10}, 88, self.gh,
+                        {"headRefOid": "abc", "baseRefName": "main"})
+
+                self.assertIsNone(eligible_at)
+                self.assertEqual(ship.dependency_vetting.is_transient_error(detail), expected)
 
     def test_rebase_transition_to_confirmed_adoption(self):
         self.gh.base_in_head.return_value = False

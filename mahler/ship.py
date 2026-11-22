@@ -1301,18 +1301,30 @@ def _merge_queued(ctx, project, item, pr, view, required=None):
     led.release(project, n, holder=CONDUCTOR)
 
 
+def _unpack_vet_gate(res):
+    if res is None:
+        return None, None
+    if isinstance(res, tuple):
+        detail = res[0]
+        eligible_at = res[1] if len(res) > 1 else None
+        return detail, eligible_at
+    if hasattr(res, "detail"):
+        return res.detail, getattr(res, "eligible_at", None)
+    return str(res), None
+
+
 def _vet_pr_dependencies(ctx, project, item, pr, gh, view):
     """Hold an agent PR merge when changed dependencies lack safe evidence."""
-    detail = _vet_gate(ctx, project, item, pr, gh, view)
+    detail, eligible_at = _unpack_vet_gate(_vet_gate(ctx, project, item, pr, gh, view))
     if detail is None:
         return True
-    _hold_dependency_vetting(ctx, project, item, pr, gh, view, detail)
+    _hold_dependency_vetting(ctx, project, item, pr, gh, view, detail, eligible_at=eligible_at)
     return False
 
 
 def _vet_gate(ctx, project, item, pr, gh, view):
-    """Run the dependency-vetting gate: None when it passes (evidence recorded),
-    else the failure detail. Never parks or holds, so waits can re-run it."""
+    """Run the dependency-vetting gate: (None, None) when it passes (evidence recorded),
+    else (detail, eligible_at). Never parks or holds, so waits can re-run it."""
     n = item["number"]
     sha = view.get("headRefOid") or ""
     evidence_key = f"dependency-vetting-evidence:{project}#{n}:{pr}:{sha}"
@@ -1326,16 +1338,19 @@ def _vet_gate(ctx, project, item, pr, gh, view):
                     "clean": True,
                     "findings": [],
                 }))
-            return None
-        findings, blocked = dependency_vetting.vet(before, after)
+            return None, None
+        vet_result = dependency_vetting.vet(before, after)
+        findings, blocked = vet_result[0], vet_result[1]
+        eligible_at = getattr(vet_result, "eligible_at", None)
     except (GHError, dependency_vetting.VettingError, KeyError, ValueError) as exc:
         ctx.say(f"{project}#{n}: PR #{pr} — dependency vetting failed; merge held: {exc}")
-        return str(exc)
+        return dependency_vetting.VettingDetail(
+            str(exc), transient=dependency_vetting.is_transient_error(exc)), None
     for finding in findings:
         ctx.say(f"{project}#{n}: PR #{pr} — {finding.report()}")
     if blocked:
         ctx.say(f"{project}#{n}: PR #{pr} — dependency vetting blocked merge: {blocked}")
-        return str(blocked)
+        return str(blocked), eligible_at
 
     serialized_findings = [
         {
@@ -1350,6 +1365,7 @@ def _vet_gate(ctx, project, item, pr, gh, view):
             "advisories": list(f.advisories),
             "blocked": f.blocked,
             "recent": f.recent,
+            "eligible_at": f.eligible_at,
             "report": f.report(),
         }
         for f in findings
@@ -1378,7 +1394,7 @@ def _vet_gate(ctx, project, item, pr, gh, view):
             )
             gh.comment(pr, comment_body)
             ctx.led.set_kv(comment_key, "1")
-    return None
+    return None, None
 
 
 _UNSUPPORTED_LOCKFILE = re.compile(r"unsupported dependency lockfile change: (\S+)")
@@ -1403,7 +1419,7 @@ def vetting_reason(pr, detail, kind="gate"):
 
 
 def _hold_dependency_vetting(ctx, project, item, pr, gh, view, detail, *, kind="gate",
-                             comment_key=None):
+                             comment_key=None, eligible_at=None):
     """Hold a PR in a bounded D52 wait instead of a permanent park. The original
     since/check count carry across resumes so the escalation timeout cannot restart."""
     n, led = item["number"], ctx.led
@@ -1418,10 +1434,13 @@ def _hold_dependency_vetting(ctx, project, item, pr, gh, view, detail, *, kind="
         led.set_kv(key, "commented")
     since, checks = waits.vetting_carry(led, project, n, pr, kind)
     wake = {"pr": pr, "kind": kind, "sha": sha}
+    if eligible_at:
+        wake["eligible_at"] = eligible_at
     if kind == "evidence":
         wake["evidence"] = waits.vetting_evidence(led, project, n, pr, sha)
     waits.hold(led, project, n, "dependency_vetting", reason, resume="verifying",
-               wake=wake, since=since, checks=checks)
+               wake=wake, since=since, checks=checks,
+               transient=dependency_vetting.is_transient_error(detail))
     waits.save_vetting_carry(led, project, n, pr, kind, since, checks)
     led.release(project, n, holder=CONDUCTOR)
 

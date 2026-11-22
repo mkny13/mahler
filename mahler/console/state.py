@@ -1995,12 +1995,17 @@ def _vetting_upstream(cfg, led, project, n):
     since = parse(rec.get("since"))
     if nxt:
         text += f" Next retry {_hhmm(nxt)}."
-    try:
-        hours = config.project_policy(cfg, project)["wait_escalate_hours"]
-    except Exception:  # noqa: BLE001 — diagnostics must not break the page
-        hours = None
-    if since and hours:
-        text += f" Escalates to Retry now / park at {_hhmm(since + timedelta(hours=hours))}."
+    wake = rec.get("wake") or {}
+    eligible = parse(wake.get("eligible_at")) if isinstance(wake, dict) else None
+    if eligible:
+        text += f" Eligible at {_hhmm(eligible)}."
+    else:
+        try:
+            hours = config.project_policy(cfg, project)["wait_escalate_hours"]
+        except Exception:  # noqa: BLE001 — diagnostics must not break the page
+            hours = None
+        if since and hours:
+            text += f" Escalates to Retry now / park at {_hhmm(since + timedelta(hours=hours))}."
     return text
 
 

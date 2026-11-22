@@ -1,6 +1,6 @@
 import json
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
 from unittest import mock
 
@@ -252,6 +252,16 @@ class DependencyVettingTests(unittest.TestCase):
 
         with self.assertRaisesRegex(vetting.VettingError, "lookup failed"):
             vetting.vet({}, npm_files(), now=NOW, opener=unavailable)
+
+    def test_malformed_registry_json_is_not_classified_as_transient(self):
+        def malformed(request, timeout):
+            return Response("{", raw=True)
+
+        with self.assertRaises(vetting.VettingError) as caught:
+            vetting.vet({}, npm_files(), now=NOW, opener=malformed)
+
+        self.assertFalse(vetting.is_transient_error(caught.exception))
+        self.assertFalse(vetting.is_transient_error(str(caught.exception)))
 
     def test_osv_failure_fails_closed(self):
         def unavailable(request, timeout):
@@ -1026,6 +1036,60 @@ class CompletionEvidenceTests(unittest.TestCase):
                 findings, reason = vetting.vet({}, files, now=NOW, opener=opener)
                 self.assertIsNone(reason)  # legitimacy remains a review judgment
                 self.assertIn("publisher unavailable; source unavailable", findings[0].report())
+
+    def test_publication_age_and_eligible_time(self):
+        # 6 days ago: recent, age-only block, eligible ~8 days from NOW
+        six_days_ago = (NOW - timedelta(days=6)).isoformat()
+        files, opener = completion_fixture("npm", date=six_days_ago)
+        res = vetting.vet({}, files, now=NOW, opener=opener)
+        findings, reason = res[0], res[1]
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0].recent)
+        self.assertTrue(findings[0].blocked)
+        self.assertIn("published less than 14 days ago: safe-package", reason)
+        self.assertNotIn("high/critical advisory", reason)
+        expected_eligible = (NOW - timedelta(days=6) + vetting.MIN_AGE).isoformat()
+        self.assertEqual(findings[0].eligible_at, expected_eligible)
+        self.assertEqual(getattr(res, "eligible_at", None), expected_eligible)
+
+        # 13 days ago: recent, age-only block, eligible ~1 day from NOW
+        thirteen_days_ago = (NOW - timedelta(days=13)).isoformat()
+        files13, opener13 = completion_fixture("npm", date=thirteen_days_ago)
+        res13 = vetting.vet({}, files13, now=NOW, opener=opener13)
+        self.assertTrue(res13[0][0].recent)
+        expected_eligible13 = (NOW - timedelta(days=13) + vetting.MIN_AGE).isoformat()
+        self.assertEqual(res13[0][0].eligible_at, expected_eligible13)
+
+        # Exactly 14 days ago: not recent, not blocked by age
+        fourteen_days_ago = (NOW - timedelta(days=14)).isoformat()
+        files14, opener14 = completion_fixture("npm", date=fourteen_days_ago)
+        res14 = vetting.vet({}, files14, now=NOW, opener=opener14)
+        self.assertFalse(res14[0][0].recent)
+        self.assertFalse(res14[0][0].blocked)
+        self.assertIsNone(res14[1])
+        self.assertIsNone(res14[0][0].eligible_at)
+        self.assertIsNone(getattr(res14, "eligible_at", None))
+
+        # 6 days ago with high advisory: recent and blocked, but eligible_at is None due to advisory
+        files_vuln, opener_vuln = completion_fixture("npm", scenario="high", date=six_days_ago)
+        res_vuln = vetting.vet({}, files_vuln, now=NOW, opener=opener_vuln)
+        self.assertTrue(res_vuln[0][0].recent)
+        self.assertTrue(res_vuln[0][0].blocked)
+        self.assertIn("high/critical advisory", res_vuln[1])
+        self.assertIn("published less than 14 days ago", res_vuln[1])
+        self.assertIsNone(res_vuln[0][0].eligible_at)
+        self.assertIsNone(getattr(res_vuln, "eligible_at", None))
+
+    def test_transient_error_classification(self):
+        files, _ = completion_fixture("npm")
+        def timeout_opener(request, timeout):
+            raise TimeoutError("connection timed out")
+
+        with self.assertRaises(vetting.VettingError) as cm:
+            vetting.vet({}, files, now=NOW, opener=timeout_opener)
+        self.assertTrue(vetting.is_transient_error(cm.exception))
+        self.assertTrue(getattr(cm.exception, "transient", False))
+
 
 
 if __name__ == "__main__":
