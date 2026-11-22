@@ -376,20 +376,76 @@ class _WorkflowResult(tuple):
         self.is_auxiliary = is_auxiliary
 
 
-def _workflow(tree, path):
-    """Extract literal PR workflow run steps and static job names, not YAML names."""
-    text = tree.read(path)
-    lines = [_yaml_line(line) for line in text.splitlines()]
-    clean_text = "\n".join(lines)
+@dataclass(frozen=True)
+class _WorkflowTrigger:
+    found: bool
+    has_pull_request: bool
+    filtered: bool = False
+    filter_cite: str = ""
+    is_auxiliary: bool = False
+
+
+@dataclass
+class _WorkflowShape:
+    anchors: bool
+    bad_jobs: bool
+    has_reusable: bool
+    cwd_cite: str
+    jobs_idx: int | None
+
+
+@dataclass
+class _WorkflowJob:
+    name: str = ""
+    condition_cite: str = ""
+    cwd_cite: str = ""
+    continue_cite: str = ""
+    preceding_uncertain_cite: str = ""
+    in_steps: bool = False
+
+
+@dataclass
+class _WorkflowStep:
+    lines: list
+    next_idx: int
+    condition_cite: str = ""
+    cwd_cite: str = ""
+    continue_cite: str = ""
+    reusable_cite: str = ""
+    run_cmd: str | None = None
+    run_line: int | None = None
+
+
+def _workflow_event_types(filter_text):
+    types_match = re.search(r"(?m)^[ \t]*types[ \t]*:[ \t]*(.*)$", filter_text)
+    if not types_match:
+        return []
+    inline_val = types_match.group(1).strip()
+    if inline_val.startswith("[") and inline_val.endswith("]"):
+        return re.findall(r"[\w-]+", inline_val)
+    if inline_val:
+        return []
+    types = []
+    for line in filter_text[types_match.end():].splitlines():
+        if not line.strip():
+            continue
+        item = re.match(r"^[ \t]*-[ \t]*([\w-]+)", line)
+        if not item:
+            break
+        types.append(item.group(1))
+    return types
+
+
+def _workflow_trigger(clean_text, path):
     trigger = re.search(r"(?m)^(?:on|['\"]on['\"]):\s*(.*)$", clean_text)
     if not trigger:
-        return _WorkflowResult([], True, [], True)
+        return _WorkflowTrigger(False, False)
     start = trigger.start()
     next_root = re.search(r"(?m)^[^\s#][^:\n]*:", clean_text[trigger.end():])
     end = trigger.end() + next_root.start() if next_root else len(clean_text)
     on = clean_text[start:end]
     if not re.search(r"\bpull_request\b", on):
-        return _WorkflowResult([], False, [], False)
+        return _WorkflowTrigger(True, False)
 
     pr_filtered, pr_filter_cite = False, ""
     is_auxiliary = False
@@ -419,275 +475,221 @@ def _workflow(tree, path):
                 offset += len(o_line) + 1
 
             pr_filter_text = "\n".join(pr_filter_lines)
-            types_match = re.search(r"(?m)^[ \t]*types[ \t]*:[ \t]*(.*)$", pr_filter_text)
-            if types_match:
-                inline_val = types_match.group(1).strip()
-                types = []
-                if inline_val.startswith("[") and inline_val.endswith("]"):
-                    types = re.findall(r"[\w-]+", inline_val)
-                elif not inline_val:
-                    types_sublines = pr_filter_text[types_match.end():].splitlines()
-                    for t_line in types_sublines:
-                        if not t_line.strip():
-                            continue
-                        item = re.match(r"^[ \t]*-[ \t]*([\w-]+)", t_line)
-                        if item:
-                            types.append(item.group(1))
-                        else:
-                            break
-                if types and not any(t in ("opened", "synchronize", "reopened") for t in types):
-                    is_auxiliary = True
-                    pr_filtered = False
+            types = _workflow_event_types(pr_filter_text)
+            if types and not any(t in ("opened", "synchronize", "reopened") for t in types):
+                is_auxiliary = True
+                pr_filtered = False
 
-    wf_anchors = bool(re.search(r"[&*][\w-]+", clean_text))
-    wf_bad_jobs = bool(re.search(r"(?m)^jobs:[ \t]*\S", clean_text))
-    wf_has_reusable = bool(re.search(r"^\s*uses:\s*[^ \n]*\.github/workflows/", clean_text, re.M))
-    wf_has_changed_cwd = bool(re.search(r"(?m)^(?:\s{0,2})working-directory:\s*(\S+)", clean_text))
-    wf_defaults_cwd = bool(re.search(r"(?m)^defaults:\s*\n(?:\s+.*\n)*?\s+working-directory:\s*(\S+)", clean_text))
-    wf_cwd_cite = ""
-    if wf_has_changed_cwd:
-        m = re.search(r"(?m)^(?:\s{0,2})working-directory:\s*(\S+)", clean_text)
-        wf_cwd_cite = f"{path}:{clean_text[:m.start()].count('\n') + 1}: changed working directory"
-    elif wf_defaults_cwd:
-        m = re.search(r"(?m)^\s+working-directory:\s*(\S+)", clean_text)
-        wf_cwd_cite = f"{path}:{clean_text[:m.start()].count('\n') + 1}: changed working directory"
+    return _WorkflowTrigger(True, True, pr_filtered, pr_filter_cite, is_auxiliary)
+
+
+def _workflow_shape(clean_text, path):
+    top_cwd = re.search(r"(?m)^(?:\s{0,2})working-directory:\s*(\S+)", clean_text)
+    defaults_cwd = re.search(
+        r"(?m)^defaults:\s*\n(?:\s+.*\n)*?\s+working-directory:\s*(\S+)",
+        clean_text,
+    )
+    cwd_cite = ""
+    if top_cwd:
+        cwd_cite = f"{path}:{clean_text[:top_cwd.start()].count('\n') + 1}: changed working directory"
+    elif defaults_cwd:
+        match = re.search(r"(?m)^\s+working-directory:\s*(\S+)", clean_text)
+        cwd_cite = f"{path}:{clean_text[:match.start()].count('\n') + 1}: changed working directory"
 
     jobs_match = re.search(r"(?m)^jobs:\s*$", clean_text)
-    if not jobs_match:
-        return [], True, [], True
-    jobs_idx = clean_text[:jobs_match.start()].count("\n")
+    return _WorkflowShape(
+        anchors=bool(re.search(r"[&*][\w-]+", clean_text)),
+        bad_jobs=bool(re.search(r"(?m)^jobs:[ \t]*\S", clean_text)),
+        has_reusable=bool(re.search(
+            r"^\s*uses:\s*[^ \n]*\.github/workflows/", clean_text, re.M)),
+        cwd_cite=cwd_cite,
+        jobs_idx=(clean_text[:jobs_match.start()].count("\n") if jobs_match else None),
+    )
 
-    rows, jobs = [], []
-    current_job = ""
-    job_has_condition = False
-    job_cond_cite = ""
-    job_has_changed_cwd = bool(wf_cwd_cite)
-    job_cwd_cite = wf_cwd_cite
-    job_has_continue_on_error = False
-    job_continue_cite = ""
-    job_preceding_uncertain = False
-    job_preceding_uncertain_cite = ""
-    in_steps = False
 
-    i = jobs_idx + 1
-    while i < len(lines):
-        line = lines[i]
+def _workflow_reset_job(name, cwd_cite):
+    return _WorkflowJob(name=name, cwd_cite=cwd_cite)
+
+
+def _workflow_update_job(job, shape, line, path, line_idx):
+    name_match = re.match(r"^    name:\s*(.+)", line)
+    if name_match:
+        job.name = name_match.group(1).strip("'\"")
+    elif re.match(r"^    if:\s*(.+)", line):
+        job.condition_cite = f"{path}:{line_idx+1}: job condition"
+    elif re.match(r"^\s+working-directory:\s*(.+)", line):
+        job.cwd_cite = f"{path}:{line_idx+1}: changed working directory"
+    elif re.match(
+            r"^\s+continue-on-error:\s*(?:true|'true'|\"true\")\s*$",
+            line, re.IGNORECASE):
+        job.continue_cite = f"{path}:{line_idx+1}: continue-on-error: true"
+    elif re.match(r"^    uses:\s*([^ \n]*\.github/workflows/.*)", line):
+        shape.has_reusable = True
+    elif re.match(r"^    steps:\s*$", line):
+        job.in_steps = True
+
+
+def _workflow_step_lines(lines, line_idx, step_indent):
+    collected = [(line_idx, lines[line_idx])]
+    next_idx = line_idx + 1
+    while next_idx < len(lines):
+        line = lines[next_idx]
         if not line.strip():
-            i += 1
+            next_idx += 1
             continue
+        indent = len(line) - len(line.lstrip())
+        if indent <= 2:
+            break
+        if re.match(r"^\s*-\s+", line) and indent <= step_indent:
+            break
+        collected.append((next_idx, line))
+        next_idx += 1
+    return collected, next_idx
 
+
+def _workflow_step(lines, line_idx, path, step_indent):
+    step_lines, next_idx = _workflow_step_lines(lines, line_idx, step_indent)
+    step = _WorkflowStep(step_lines, next_idx)
+    pos = 0
+    while pos < len(step_lines):
+        source_idx, text = step_lines[pos]
+        if re.search(r"(?:^|\s)(?:-\s*)?if:\s*(.+)", text):
+            step.condition_cite = f"{path}:{source_idx+1}: step condition"
+        if re.search(r"(?:^|\s)(?:-\s*)?working-directory:\s*(.+)", text):
+            step.cwd_cite = f"{path}:{source_idx+1}: changed working directory"
+        if re.match(
+                r"^\s*(?:-\s*)?continue-on-error:\s*(?:true|'true'|\"true\")\s*$",
+                text, re.IGNORECASE):
+            step.continue_cite = f"{path}:{source_idx+1}: continue-on-error: true"
+        if re.search(r"uses:\s*[^ \n]*\.github/workflows/", text):
+            step.reusable_cite = f"{path}:{source_idx+1}: reusable workflow"
+
+        run_match = re.match(r"^(\s*)(?:-\s*)?run:\s*(.*)$", text)
+        if run_match:
+            step.run_line = source_idx + 1
+            value = run_match.group(2).strip()
+            if value in ("|", "|-", "|+", ">", ">-", ">+"):
+                run_indent = len(run_match.group(1)) + (2 if text.lstrip().startswith("-") else 0)
+                body = []
+                while pos + 1 < len(step_lines):
+                    _, following = step_lines[pos + 1]
+                    if following.strip() and len(following) - len(following.lstrip()) <= run_indent:
+                        break
+                    pos += 1
+                    body.append(following.strip())
+                value = "\n".join(body) if value.startswith("|") else " ".join(body)
+            elif len(value) >= 2 and value[0] in "'\"" and value[-1] == value[0]:
+                value = value[1:-1]
+            step.run_cmd = value
+        pos += 1
+    return step
+
+
+def _workflow_uncertainty(job, step, trigger, dynamic, unknown, path):
+    if job.condition_cite:
+        return ("Verify command execution is conditional (job condition).",), (job.condition_cite,)
+    if step.condition_cite:
+        return ("Verify command execution is conditional (step condition).",), (step.condition_cite,)
+    if job.continue_cite:
+        return ("Verify command execution allows failure (job continue-on-error).",), (job.continue_cite,)
+    if step.continue_cite:
+        return ("Verify command execution allows failure (step continue-on-error).",), (step.continue_cite,)
+    if trigger.filtered:
+        return ("Workflow pull_request trigger has filters.",), (trigger.filter_cite,)
+    if job.cwd_cite or step.cwd_cite:
+        return ("Verify command runs in a changed working directory.",), (step.cwd_cite or job.cwd_cite,)
+    if job.preceding_uncertain_cite:
+        return ("Unresolved execution precedes verify command.",), (job.preceding_uncertain_cite,)
+    if dynamic or unknown:
+        return ("Verify command uses dynamic expansion or evaluation.",), (f"{path}:{step.run_line}: dynamic command",)
+    return (), ()
+
+
+def _workflow_step_commands(tree, path, job, step, trigger):
+    if step.run_cmd is None:
+        return [], [], ""
+    parts = _verify_parts(step.run_cmd, separators=";\n")
+    syntax_unknown = parts is None
+    commands, test_jobs = [], []
+    unresolved_cite = ""
+    for part in parts if parts is not None else [step.run_cmd]:
+        if not part or part.startswith("#"):
+            continue
+        dynamic = "${{" in part
+        expanded, expand_unknown = _expand(tree, part)
+        unknown = expand_unknown or syntax_unknown
+        for cmd, cite in expanded:
+            reasons, cites = _workflow_uncertainty(
+                job, step, trigger, dynamic, unknown, path)
+            full_cite = f"{path}:{step.run_line} job={job.name} run: {cmd}" + (
+                f" -> {cite}" if cite else "")
+            commands.append(_Command(
+                cmd=cmd,
+                cite=full_cite,
+                uncertain=bool(reasons),
+                reasons=reasons,
+                uncertain_cites=cites,
+            ))
+            if _is_test(cmd) and job.name not in test_jobs:
+                test_jobs.append(job.name)
+            if expand_unknown:
+                unresolved_cite = f"{path}:{step.run_line}: unresolved execution: {cmd}"
+    return commands, test_jobs, unresolved_cite
+
+
+def _workflow_step_uncertain_cite(step, path):
+    return (
+        step.condition_cite or step.continue_cite or step.cwd_cite or step.reusable_cite or
+        (f"{path}:{step.lines[0][0]+1}: conditional step" if (
+            step.condition_cite or step.cwd_cite or step.continue_cite or step.reusable_cite
+        ) else "")
+    )
+
+
+def _workflow_jobs(tree, path, lines, shape, trigger):
+    rows, jobs = [], []
+    job = _WorkflowJob(cwd_cite=shape.cwd_cite)
+    line_idx = shape.jobs_idx + 1
+    while line_idx < len(lines):
+        line = lines[line_idx]
+        if not line.strip():
+            line_idx += 1
+            continue
         if re.match(r"^[^\s#][^:\n]*:", line):
             break
-
         job_match = re.match(r"^  ([\w-]+):\s*$", line)
         if job_match and job_match.group(1) != "pull_request":
-            current_job = job_match.group(1)
-            job_has_condition = False
-            job_cond_cite = ""
-            job_has_changed_cwd = bool(wf_cwd_cite)
-            job_cwd_cite = wf_cwd_cite
-            job_has_continue_on_error = False
-            job_continue_cite = ""
-            job_preceding_uncertain = False
-            job_preceding_uncertain_cite = ""
-            in_steps = False
-            i += 1
+            job = _workflow_reset_job(job_match.group(1), shape.cwd_cite)
+            line_idx += 1
             continue
-
-        if not current_job:
-            i += 1
+        if not job.name:
+            line_idx += 1
             continue
-
-        if not in_steps:
-            name_match = re.match(r"^    name:\s*(.+)", line)
-            if name_match:
-                current_job = name_match.group(1).strip("'\"")
-                i += 1
-                continue
-
-            cond_match = re.match(r"^    if:\s*(.+)", line)
-            if cond_match:
-                job_has_condition = True
-                job_cond_cite = f"{path}:{i+1}: job condition"
-                i += 1
-                continue
-
-            cwd_match = re.match(r"^\s+working-directory:\s*(.+)", line)
-            if cwd_match:
-                job_has_changed_cwd = True
-                job_cwd_cite = f"{path}:{i+1}: changed working directory"
-                i += 1
-                continue
-
-            continue_match = re.match(r"^\s+continue-on-error:\s*(?:true|'true'|\"true\")\s*$", line, re.IGNORECASE)
-            if continue_match:
-                job_has_continue_on_error = True
-                job_continue_cite = f"{path}:{i+1}: continue-on-error: true"
-                i += 1
-                continue
-
-            if re.match(r"^    uses:\s*([^ \n]*\.github/workflows/.*)", line):
-                wf_has_reusable = True
-                i += 1
-                continue
-
-            if re.match(r"^    steps:\s*$", line):
-                in_steps = True
-                i += 1
-                continue
-
-            i += 1
+        if not job.in_steps:
+            _workflow_update_job(job, shape, line, path, line_idx)
+            line_idx += 1
             continue
-
         step_match = re.match(r"^(\s*)-\s*(.*)$", line)
         if not step_match:
-            i += 1
+            line_idx += 1
             continue
+        step = _workflow_step(lines, line_idx, path, len(step_match.group(1)))
+        step_cite = _workflow_step_uncertain_cite(step, path)
+        commands, test_jobs, unresolved_cite = _workflow_step_commands(
+            tree, path, job, step, trigger)
+        rows.extend(commands)
+        for name in test_jobs:
+            if name not in jobs:
+                jobs.append(name)
+        if unresolved_cite or step_cite:
+            job.preceding_uncertain_cite = unresolved_cite or step_cite
+        line_idx = step.next_idx
+    return rows, jobs
 
-        step_indent = len(step_match.group(1))
-        step_lines = [(i, line)]
-        next_i = i + 1
-        while next_i < len(lines):
-            next_line = lines[next_i]
-            if not next_line.strip():
-                next_i += 1
-                continue
-            next_indent = len(next_line) - len(next_line.lstrip())
-            if next_indent <= 2:
-                break
-            if re.match(r"^\s*-\s+", next_line) and next_indent <= step_indent:
-                break
-            step_lines.append((next_i, next_line))
-            next_i += 1
 
-        step_has_condition = False
-        step_cond_cite = ""
-        step_has_changed_cwd = False
-        step_cwd_cite = ""
-        step_has_continue_on_error = False
-        step_continue_cite = ""
-        step_has_reusable = False
-        step_reusable_cite = ""
-        step_run_cmd = None
-        step_run_line = None
-
-        j = 0
-        while j < len(step_lines):
-            s_idx, s_text = step_lines[j]
-            if re.search(r"(?:^|\s)(?:-\s*)?if:\s*(.+)", s_text):
-                step_has_condition = True
-                step_cond_cite = f"{path}:{s_idx+1}: step condition"
-            if re.search(r"(?:^|\s)(?:-\s*)?working-directory:\s*(.+)", s_text):
-                step_has_changed_cwd = True
-                step_cwd_cite = f"{path}:{s_idx+1}: changed working directory"
-            if re.match(r"^\s*(?:-\s*)?continue-on-error:\s*(?:true|'true'|\"true\")\s*$", s_text, re.IGNORECASE):
-                step_has_continue_on_error = True
-                step_continue_cite = f"{path}:{s_idx+1}: continue-on-error: true"
-            if re.search(r"uses:\s*[^ \n]*\.github/workflows/", s_text):
-                step_has_reusable = True
-                step_reusable_cite = f"{path}:{s_idx+1}: reusable workflow"
-
-            run_match = re.match(r"^(\s*)(?:-\s*)?run:\s*(.*)$", s_text)
-            if run_match:
-                step_run_line = s_idx + 1
-                cmd_val = run_match.group(2).strip()
-                if cmd_val in ("|", "|-", "|+", ">", ">-", ">+"):
-                    run_indent = len(run_match.group(1)) + (2 if s_text.lstrip().startswith("-") else 0)
-                    body = []
-                    while j + 1 < len(step_lines):
-                        f_idx, f_text = step_lines[j + 1]
-                        if f_text.strip() and len(f_text) - len(f_text.lstrip()) <= run_indent:
-                            break
-                        j += 1
-                        body.append(f_text.strip())
-                    cmd_val = "\n".join(body) if cmd_val.startswith("|") else " ".join(body)
-                else:
-                    if len(cmd_val) >= 2 and cmd_val[0] in "'\"" and cmd_val[-1] == cmd_val[0]:
-                        cmd_val = cmd_val[1:-1]
-                step_run_cmd = cmd_val
-            j += 1
-
-        step_had_uncertainty = (
-            step_has_condition or step_has_changed_cwd or
-            step_has_continue_on_error or step_has_reusable
-        )
-        step_uncertain_cite = (
-            step_cond_cite or step_continue_cite or step_cwd_cite or step_reusable_cite or
-            (f"{path}:{step_lines[0][0]+1}: conditional step" if step_had_uncertainty else "")
-        )
-
-        if step_run_cmd is not None:
-            parts = _verify_parts(step_run_cmd, separators=";\n")
-            syntax_unknown = parts is None
-            for part in parts if parts is not None else [step_run_cmd]:
-                if not part or part.startswith("#"):
-                    continue
-                cmd_dynamic = "${{" in part
-                expanded, expand_unknown = _expand(tree, part)
-                unknown = expand_unknown or syntax_unknown
-
-                for cmd, cite in expanded:
-                    cmd_uncertain = False
-                    cmd_reasons = []
-                    cmd_cites = []
-
-                    if job_has_condition:
-                        cmd_uncertain = True
-                        cmd_reasons.append("Verify command execution is conditional (job condition).")
-                        cmd_cites.append(job_cond_cite)
-                    elif step_has_condition:
-                        cmd_uncertain = True
-                        cmd_reasons.append("Verify command execution is conditional (step condition).")
-                        cmd_cites.append(step_cond_cite)
-                    elif job_has_continue_on_error:
-                        cmd_uncertain = True
-                        cmd_reasons.append("Verify command execution allows failure (job continue-on-error).")
-                        cmd_cites.append(job_continue_cite)
-                    elif step_has_continue_on_error:
-                        cmd_uncertain = True
-                        cmd_reasons.append("Verify command execution allows failure (step continue-on-error).")
-                        cmd_cites.append(step_continue_cite)
-                    elif pr_filtered:
-                        cmd_uncertain = True
-                        cmd_reasons.append("Workflow pull_request trigger has filters.")
-                        cmd_cites.append(pr_filter_cite)
-                    elif job_has_changed_cwd or step_has_changed_cwd:
-                        cmd_uncertain = True
-                        cmd_reasons.append("Verify command runs in a changed working directory.")
-                        cmd_cites.append(step_cwd_cite or job_cwd_cite)
-                    elif job_preceding_uncertain:
-                        cmd_uncertain = True
-                        cmd_reasons.append("Unresolved execution precedes verify command.")
-                        cmd_cites.append(job_preceding_uncertain_cite)
-                    elif cmd_dynamic or unknown:
-                        cmd_uncertain = True
-                        cmd_reasons.append("Verify command uses dynamic expansion or evaluation.")
-                        cmd_cites.append(f"{path}:{step_run_line}: dynamic command")
-
-                    full_cite = f"{path}:{step_run_line} job={current_job} run: {cmd}" + (f" -> {cite}" if cite else "")
-                    cmd_obj = _Command(
-                        cmd=cmd,
-                        cite=full_cite,
-                        uncertain=cmd_uncertain,
-                        reasons=tuple(cmd_reasons),
-                        uncertain_cites=tuple(cmd_cites)
-                    )
-                    rows.append(cmd_obj)
-                    if _is_test(cmd) and current_job not in jobs:
-                        jobs.append(current_job)
-
-                    if expand_unknown:
-                        step_had_uncertainty = True
-                        step_uncertain_cite = f"{path}:{step_run_line}: unresolved execution: {cmd}"
-
-        if step_had_uncertainty:
-            job_preceding_uncertain = True
-            job_preceding_uncertain_cite = step_uncertain_cite
-
-        i = next_i
-
+def _workflow_result(rows, jobs, trigger, shape):
     structural_uncertainty = (
-        pr_filtered or wf_anchors or wf_bad_jobs or wf_has_reusable or not rows
+        trigger.filtered or shape.anchors or shape.bad_jobs or shape.has_reusable or not rows
     )
     tests = [r for r in rows if _is_test(r.cmd)]
     proven_tests = [r for r in tests if not r.uncertain]
@@ -697,8 +699,25 @@ def _workflow(tree, path):
         structural_uncertainty or cmd_uncertainty,
         jobs,
         structural_uncertainty,
-        is_auxiliary=is_auxiliary,
+        is_auxiliary=trigger.is_auxiliary,
     )
+
+
+def _workflow(tree, path):
+    """Extract literal PR workflow run steps and static job names, not YAML names."""
+    text = tree.read(path)
+    lines = [_yaml_line(line) for line in text.splitlines()]
+    clean_text = "\n".join(lines)
+    trigger = _workflow_trigger(clean_text, path)
+    if not trigger.found:
+        return _WorkflowResult([], True, [], True)
+    if not trigger.has_pull_request:
+        return _WorkflowResult([], False, [], False)
+    shape = _workflow_shape(clean_text, path)
+    if shape.jobs_idx is None:
+        return [], True, [], True
+    rows, jobs = _workflow_jobs(tree, path, lines, shape, trigger)
+    return _workflow_result(rows, jobs, trigger, shape)
 
 
 def _ci(tree):
