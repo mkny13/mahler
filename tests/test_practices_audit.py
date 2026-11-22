@@ -365,7 +365,10 @@ class TestPracticesAudit(unittest.TestCase):
             and (node.name == "_workflow" or node.name.startswith("_workflow_"))
         }
         self.assertIn("_workflow", counts)
-        self.assertTrue(any(name != "_workflow" for name in counts), counts)
+        self.assertTrue(
+            any(name != "_workflow" for name in counts),
+            "workflow parser helpers were not extracted",
+        )
         self.assertEqual({}, {name: count for name, count in counts.items() if count > 30})
 
     def test_conditional_and_reusable_workflows_are_unknown(self):
