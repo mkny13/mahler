@@ -44,7 +44,8 @@ def clear(led, project, n):
     led.set_kv(key(project, n), "")
 
 
-def hold(led, project, n, cause, reason, *, resume, wake=None, since=None, checks=0):
+def hold(led, project, n, cause, reason, *, resume, wake=None, since=None, checks=0,
+         transient=False):
     """Put an item into ``waiting``. Never pings.
 
     ``since``/``checks`` carry an earlier wait on the same cause forward, so a
@@ -62,11 +63,14 @@ def hold(led, project, n, cause, reason, *, resume, wake=None, since=None, check
         eligible_dt = parse(wake["eligible_at"])
         if eligible_dt and led.now() < eligible_dt + AGE_MARGIN:
             next_at_dt = eligible_dt + AGE_MARGIN
-    led.set_kv(key(project, n), json.dumps({
+    record = {
         "cause": cause, "reason": reason, "resume": resume, "since": since,
         "bound_at": led.item(project, n)["state_changed_at"], "wake": wake,
         "checks": checks,
-        "next_at": iso(next_at_dt)}))
+        "next_at": iso(next_at_dt)}
+    if transient:
+        record["transient"] = True
+    led.set_kv(key(project, n), json.dumps(record))
     led.event("wait", project, n, {"cause": cause, "reason": reason})
 
 
@@ -267,7 +271,11 @@ def _wake_dependency_vetting(ctx, project, item, record):
         return True, "PR is no longer open"
     sha = view.get("headRefOid") or ""
     previous = wake.get("evidence", vetting_evidence(led, project, n, pr, sha))
-    res = ship._vet_gate(ctx, project, item, pr, gh, view)
+    try:
+        res = ship._vet_gate(ctx, project, item, pr, gh, view)
+    except dependency_vetting.VettingError as exc:
+        res = (dependency_vetting.VettingDetail(
+            str(exc), transient=dependency_vetting.is_transient_error(exc)), None)
     detail, eligible_at = ship._unpack_vet_gate(res)
     if detail is not None:
         transient = dependency_vetting.is_transient_error(detail)
@@ -276,14 +284,16 @@ def _wake_dependency_vetting(ctx, project, item, record):
             record["transient"] = True
             return False, f"transient lookup failure: {detail}"
 
-        record.pop("transient", None)
+        was_transient = record.pop("transient", None)
         if eligible_at:
             wake["eligible_at"] = eligible_at
             record["wake"] = wake
         else:
-            if "eligible_at" in wake:
+            had_age_marker = "eligible_at" in wake
+            if had_age_marker:
                 wake.pop("eligible_at", None)
                 record["wake"] = wake
+            if had_age_marker or was_transient:
                 record["since"] = iso(led.now())
 
         reason = ship.vetting_reason(pr, detail, kind)
@@ -368,12 +378,14 @@ def _recheck_item(ctx, project, item):
     wake = record.get("wake") or {}
     eligible_str = wake.get("eligible_at") if (cause == "dependency_vetting" and isinstance(wake, dict)) else None
     eligible_dt = parse(eligible_str) if eligible_str else None
+    transient = cause == "dependency_vetting" and bool(record.get("transient"))
 
     if eligible_dt:
-        if now >= eligible_dt and now - eligible_dt >= timedelta(hours=limit):
+        if (not transient and now >= eligible_dt
+                and now - eligible_dt >= timedelta(hours=limit)):
             _backstop(ctx, project, item, record, int((now - eligible_dt).total_seconds() // 3600))
             return
-    else:
+    elif not transient:
         if since and now - since >= timedelta(hours=limit):
             _backstop(ctx, project, item, record, int((now - since).total_seconds() // 3600))
             return
@@ -394,10 +406,12 @@ def _recheck_item(ctx, project, item):
     eligible_str = wake.get("eligible_at") if (cause == "dependency_vetting" and isinstance(wake, dict)) else None
     eligible_dt = parse(eligible_str) if eligible_str else None
     if eligible_dt and now < eligible_dt + AGE_MARGIN:
-        if record.pop("transient", None):
+        if record.get("transient"):
             record["next_at"] = iso(min(now + next_delay, eligible_dt + AGE_MARGIN))
         else:
             record["next_at"] = iso(eligible_dt + AGE_MARGIN)
+    elif cause == "dependency_vetting" and record.get("transient"):
+        record["next_at"] = iso(now + next_delay)
     else:
         record.pop("transient", None)
         record["next_at"] = iso(now + next_delay)

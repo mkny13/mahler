@@ -1344,7 +1344,8 @@ def _vet_gate(ctx, project, item, pr, gh, view):
         eligible_at = getattr(vet_result, "eligible_at", None)
     except (GHError, dependency_vetting.VettingError, KeyError, ValueError) as exc:
         ctx.say(f"{project}#{n}: PR #{pr} — dependency vetting failed; merge held: {exc}")
-        return str(exc), None
+        return dependency_vetting.VettingDetail(
+            str(exc), transient=dependency_vetting.is_transient_error(exc)), None
     for finding in findings:
         ctx.say(f"{project}#{n}: PR #{pr} — {finding.report()}")
     if blocked:
@@ -1438,7 +1439,8 @@ def _hold_dependency_vetting(ctx, project, item, pr, gh, view, detail, *, kind="
     if kind == "evidence":
         wake["evidence"] = waits.vetting_evidence(led, project, n, pr, sha)
     waits.hold(led, project, n, "dependency_vetting", reason, resume="verifying",
-               wake=wake, since=since, checks=checks)
+               wake=wake, since=since, checks=checks,
+               transient=dependency_vetting.is_transient_error(detail))
     waits.save_vetting_carry(led, project, n, pr, kind, since, checks)
     led.release(project, n, holder=CONDUCTOR)
 

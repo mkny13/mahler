@@ -253,6 +253,16 @@ class DependencyVettingTests(unittest.TestCase):
         with self.assertRaisesRegex(vetting.VettingError, "lookup failed"):
             vetting.vet({}, npm_files(), now=NOW, opener=unavailable)
 
+    def test_malformed_registry_json_is_not_classified_as_transient(self):
+        def malformed(request, timeout):
+            return Response("{", raw=True)
+
+        with self.assertRaises(vetting.VettingError) as caught:
+            vetting.vet({}, npm_files(), now=NOW, opener=malformed)
+
+        self.assertFalse(vetting.is_transient_error(caught.exception))
+        self.assertFalse(vetting.is_transient_error(str(caught.exception)))
+
     def test_osv_failure_fails_closed(self):
         def unavailable(request, timeout):
             if request.full_url == "https://api.osv.dev/v1/query":

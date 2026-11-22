@@ -6418,6 +6418,23 @@ class DependencyPRTests(unittest.TestCase):
         return [json.loads(r['value']) for r in self.led.q(
             "SELECT value FROM kv WHERE key LIKE 'dependency-rebase:x:%'")]
 
+    def test_vet_gate_preserves_structured_transient_classification(self):
+        self.gh.dependency_files.return_value = ({}, {})
+        with mock.patch.object(ship.dependency_vetting, "changed_dependencies",
+                               return_value=[object()]):
+            for error, expected in (
+                    (ship.dependency_vetting.TransientVettingError("unexpected transport failure"), True),
+                    (ship.dependency_vetting.VettingError(
+                        "registry/advisory lookup failed: invalid JSON response"), False)):
+                with self.subTest(transient=expected), \
+                        mock.patch.object(ship.dependency_vetting, "vet", side_effect=error):
+                    detail, eligible_at = ship._vet_gate(
+                        self.ctx, "x", {"number": 10}, 88, self.gh,
+                        {"headRefOid": "abc", "baseRefName": "main"})
+
+                self.assertIsNone(eligible_at)
+                self.assertEqual(ship.dependency_vetting.is_transient_error(detail), expected)
+
     def test_rebase_transition_to_confirmed_adoption(self):
         self.gh.base_in_head.return_value = False
         self.run_pass()

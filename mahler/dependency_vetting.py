@@ -24,6 +24,15 @@ class VettingError(RuntimeError):
         self.transient = transient
 
 
+class VettingDetail(str):
+    """String-compatible gate detail that retains lookup failure classification."""
+
+    def __new__(cls, message, *, transient=False):
+        detail = super().__new__(cls, message)
+        detail.transient = transient
+        return detail
+
+
 class TransientVettingError(VettingError):
     """Transient lookup failure from registry/advisory query that should be retried."""
 
@@ -32,12 +41,13 @@ class TransientVettingError(VettingError):
 
 
 def is_transient_error(exc_or_detail):
-    if isinstance(exc_or_detail, VettingError) and getattr(exc_or_detail, "transient", False):
-        return True
+    if isinstance(exc_or_detail, VettingError):
+        return bool(getattr(exc_or_detail, "transient", False))
+    if isinstance(exc_or_detail, VettingDetail):
+        return exc_or_detail.transient
     if isinstance(exc_or_detail, str):
         lower = exc_or_detail.lower()
-        return ("registry/advisory lookup failed:" in exc_or_detail
-                or "registry/advisory lookup returned http 429" in lower
+        return ("registry/advisory lookup returned http 429" in lower
                 or "registry/advisory lookup returned http 5" in lower
                 or "the read operation timed out" in lower
                 or "timed out" in lower
@@ -885,7 +895,7 @@ def _request_json(url, *, data=None, opener=None):
     except (URLError, TimeoutError, OSError) as exc:
         raise TransientVettingError(f"registry/advisory lookup failed: {exc}") from None
     except (UnicodeError, json.JSONDecodeError) as exc:
-        raise VettingError(f"registry/advisory lookup failed: {exc}") from None
+        raise VettingError(f"registry/advisory lookup failed: invalid JSON response: {exc}") from None
 
 
 _POM_LIMIT = 1_000_000

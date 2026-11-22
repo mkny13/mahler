@@ -242,6 +242,46 @@ class WaitTests(unittest.TestCase):
             waits.recheck(self.ctx, "p")
         self.assertEqual(self.led.item("p", 1)["state"], "verifying")
 
+    def test_transient_vetting_wait_without_age_marker_does_not_escalate(self):
+        self.led.upsert_item("p", 1, pr=88)
+        gh = SiteGH()
+        self.ctx.gh = lambda project: gh
+        detail = "registry/advisory lookup failed: The read operation timed out"
+        ship._hold_dependency_vetting(
+            self.ctx, "p", self.led.item("p", 1), 88, gh,
+            {"headRefOid": "abc"}, detail)
+
+        self.advance(hours=72)
+        with mock.patch("mahler.ship._vet_gate", return_value=(detail, None)):
+            waits.recheck(self.ctx, "p")
+
+        record = self.record()
+        self.assertEqual(self.led.item("p", 1)["state"], "waiting")
+        self.assertTrue(record.get("transient"))
+        self.assertEqual(record["since"], iso(T0))
+        self.assertEqual(self.pings, [])
+
+        # A real blocker replaces the transient failure and starts its own backstop clock.
+        self.advance(minutes=30)
+        blocker = "high/critical advisory: safe-package"
+        with mock.patch("mahler.ship._vet_gate", return_value=(blocker, None)):
+            waits.recheck(self.ctx, "p")
+        blocker_since = self.record()["since"]
+        self.assertEqual(blocker_since, iso(self.now))
+        self.assertNotIn("transient", self.record())
+
+        self.advance(hours=71)
+        with mock.patch("mahler.ship._vet_gate", return_value=(blocker, None)):
+            waits.recheck(self.ctx, "p")
+        self.assertEqual(self.led.item("p", 1)["state"], "waiting")
+        self.assertEqual(self.pings, [])
+
+        self.advance(hours=1)
+        with mock.patch("mahler.ship._vet_gate", return_value=(blocker, None)):
+            waits.recheck(self.ctx, "p")
+        self.assertEqual(self.led.item("p", 1)["state"], "needs_you")
+        self.assertEqual(len(self.pings), 1)
+
     def test_vetting_wait_non_age_blocker_clears_eligible_at_and_escalates_under_normal_backstop(self):
         self.led.upsert_item("p", 1, pr=88)
         gh = SiteGH()
