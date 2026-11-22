@@ -1186,6 +1186,191 @@ class SpawnStdinTests(unittest.TestCase):
         self.assertIs(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
 
 
+class MarkerDescriptorTests(unittest.TestCase):
+    """runner.spawn marker descriptor lifecycle and fault-injection tests (mahler#1656)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.runs_dir = Path(self.tmp.name) / "runs"
+        self.run_id = "165601"
+        self.run_dir = self.runs_dir / self.run_id
+        self.run_dir.mkdir(parents=True)
+        self.log_path = self.run_dir / "agent.log"
+        self.status_path = self.run_dir / "exit"
+        self.env = {
+            "MAHLER_RUN_ID": self.run_id,
+            "MAHLER_RUNS_DIR": str(self.runs_dir),
+        }
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _track_descriptors(self):
+        opened_marker_fds = []
+        closed_marker_fds = []
+        real_open = os.open
+        real_close = os.close
+        marker_inodes = {}
+
+        def tracking_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if "process-marker" in str(path):
+                opened_marker_fds.append(fd)
+                marker_inodes[fd] = os.fstat(fd).st_ino
+            return fd
+
+        def tracking_close(fd):
+            if fd in opened_marker_fds:
+                # The fd number may be reused later; count only the marker file.
+                try:
+                    same = os.fstat(fd).st_ino == marker_inodes[fd]
+                except OSError:
+                    same = False
+                if same:
+                    closed_marker_fds.append(fd)
+            return real_close(fd)
+
+        def is_open(fd):
+            try:
+                os.fstat(fd)
+                return True
+            except OSError:
+                return False
+
+        def cleanup_leaked():
+            for fd in opened_marker_fds:
+                if is_open(fd):
+                    try:
+                        real_close(fd)
+                    except OSError:
+                        pass
+
+        self.addCleanup(cleanup_leaked)
+        return opened_marker_fds, closed_marker_fds, tracking_open, tracking_close, is_open
+
+    def test_marker_fchmod_failure_closes_raw_descriptor(self):
+        opened, closed, tr_open, tr_close, is_open = self._track_descriptors()
+
+        def fault_fchmod(fd, mode):
+            raise OSError(13, "fchmod permission denied fault")
+
+        with mock.patch.object(runner.sys, "platform", "darwin"), \
+                mock.patch("os.open", side_effect=tr_open), \
+                mock.patch("os.close", side_effect=tr_close), \
+                mock.patch("os.fchmod", side_effect=fault_fchmod):
+            with self.assertRaises(OSError) as ctx:
+                runner.spawn(["/bin/cmd"], self.tmp.name, str(self.log_path),
+                             str(self.status_path), env=self.env)
+
+        self.assertIn("fchmod permission denied fault", str(ctx.exception))
+        self.assertEqual(len(opened), 1, "Expected marker file to be opened")
+        marker_fd = opened[0]
+        self.assertFalse(is_open(marker_fd), f"Marker descriptor {marker_fd} was leaked after fchmod failure")
+        self.assertEqual(closed.count(marker_fd), 1, "Expected raw marker descriptor to be closed exactly once")
+
+    def test_marker_fdopen_failure_closes_raw_descriptor(self):
+        opened, closed, tr_open, tr_close, is_open = self._track_descriptors()
+
+        def fault_fdopen(fd, *args, **kwargs):
+            raise OSError(24, "fdopen EMFILE fault")
+
+        with mock.patch.object(runner.sys, "platform", "darwin"), \
+                mock.patch("os.open", side_effect=tr_open), \
+                mock.patch("os.close", side_effect=tr_close), \
+                mock.patch("os.fdopen", side_effect=fault_fdopen):
+            with self.assertRaises(OSError) as ctx:
+                runner.spawn(["/bin/cmd"], self.tmp.name, str(self.log_path),
+                             str(self.status_path), env=self.env)
+
+        self.assertIn("fdopen EMFILE fault", str(ctx.exception))
+        self.assertEqual(len(opened), 1, "Expected marker file to be opened")
+        marker_fd = opened[0]
+        self.assertFalse(is_open(marker_fd), f"Marker descriptor {marker_fd} was leaked after fdopen failure")
+        self.assertEqual(closed.count(marker_fd), 1, "Expected raw marker descriptor to be closed exactly once")
+
+    def test_marker_popen_failure_closes_stream_without_double_close(self):
+        opened, closed, tr_open, tr_close, is_open = self._track_descriptors()
+
+        with mock.patch.object(runner.sys, "platform", "darwin"), \
+                mock.patch("os.open", side_effect=tr_open), \
+                mock.patch("os.close", side_effect=tr_close), \
+                mock.patch("subprocess.Popen", side_effect=OSError(2, "Popen ENOENT fault")):
+            with self.assertRaises(OSError) as ctx:
+                runner.spawn(["/bin/cmd"], self.tmp.name, str(self.log_path),
+                             str(self.status_path), env=self.env)
+
+        self.assertIn("Popen ENOENT fault", str(ctx.exception))
+        self.assertEqual(len(opened), 1, "Expected marker file to be opened")
+        marker_fd = opened[0]
+        self.assertFalse(is_open(marker_fd), f"Marker descriptor {marker_fd} was leaked after Popen failure")
+        self.assertEqual(closed.count(marker_fd), 0, "Double-close: os.close was called in addition to stream.close()")
+
+    def test_marker_success_closes_parent_copy_and_passes_fds(self):
+        opened, closed, tr_open, tr_close, is_open = self._track_descriptors()
+        popen_calls = []
+        ready = self.run_dir / "process-tracker-ready"
+
+        def mock_popen(*args, **kwargs):
+            p = mock.MagicMock()
+            p.pid = 98765
+            p.poll.return_value = None
+            popen_calls.append((args, kwargs))
+            ready.touch()
+            return p
+
+        with mock.patch.object(runner.sys, "platform", "darwin"), \
+                mock.patch("os.open", side_effect=tr_open), \
+                mock.patch("os.close", side_effect=tr_close), \
+                mock.patch("subprocess.Popen", side_effect=mock_popen):
+            pid = runner.spawn(["/bin/cmd"], self.tmp.name, str(self.log_path),
+                               str(self.status_path), env=self.env)
+
+        self.assertEqual(pid, 98765)
+        self.assertEqual(len(opened), 1)
+        marker_fd = opened[0]
+        self.assertFalse(is_open(marker_fd), "Parent marker copy was not closed after spawn")
+        self.assertEqual(closed.count(marker_fd), 0, "Double-close on success path")
+
+        child_args, child_kwargs = popen_calls[0]
+        self.assertEqual(child_kwargs.get("pass_fds"), (marker_fd,))
+        self.assertIsNotNone(child_kwargs.get("stdin"))
+        self.assertNotEqual(child_kwargs.get("stdin"), subprocess.DEVNULL)
+
+    def test_marker_inheritance_real_subprocess(self):
+        if sys.platform != "darwin":
+            self.skipTest("Darwin marker inheritance test")
+        out_file = self.run_dir / "child_marker_info.txt"
+        processes = []
+        real_popen = subprocess.Popen
+
+        def tracked_popen(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        child_code = (
+            "import os, pathlib, sys\n"
+            f"out = pathlib.Path({str(out_file)!r})\n"
+            "stdin_ino = os.fstat(0).st_ino\n"
+            "out.write_text(f'{stdin_ino}')\n"
+            "sys.exit(0)\n"
+        )
+        with mock.patch.object(runner.subprocess, "Popen", side_effect=tracked_popen):
+            runner.spawn([sys.executable, "-c", child_code], self.tmp.name,
+                         str(self.log_path), str(self.status_path), env=self.env)
+        deadline = time.monotonic() + 5
+        while not self.status_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(self.status_path.exists(), "Child process did not finish")
+        for process in processes:
+            process.wait(timeout=5)
+        marker_path = self.run_dir / "process-marker"
+        self.assertTrue(marker_path.exists())
+        self.assertTrue(out_file.exists())
+        child_stdin_ino = int(out_file.read_text().strip())
+        self.assertEqual(child_stdin_ino, marker_path.stat().st_ino)
+
+
 class DetachedProcessReapingTests(unittest.TestCase):
     def test_fast_exit_reaps_detached_native_helper(self):
         """A native helper must not escape between its fork and the next poll."""
