@@ -876,6 +876,24 @@ class ProjectOverviewStateTests(unittest.TestCase):
         self.assertIn("Next retry", blocked[2]["reason"])
         self.assertIn("Escalates to Retry now / park", blocked[2]["reason"])
 
+    def test_blocked_row_shows_eligible_time_for_age_wait(self):
+        from mahler import waits
+        from mahler.ledger import iso
+        from datetime import timedelta
+        eligible = iso(self.led.now() + timedelta(days=8))
+        self.led.upsert_item("groundwork", 1, title="Upstream", state="verifying", pr=88)
+        waits.hold(self.led, "groundwork", 1, "dependency_vetting",
+                   "PR #88 dependency vetting blocked: published less than 14 days ago: safe-package",
+                   resume="verifying", wake={"pr": 88, "kind": "gate", "eligible_at": eligible})
+        self.led.upsert_item("groundwork", 2, title="Dependent", state="ready",
+                             depends=json.dumps([1]))
+        s = state.build(self.cfg, self.led, project_scope="groundwork")
+        blocked = {r["number"]: r for r in s["overview"]["blocked_rows"]}
+        self.assertIn("waits on #1", blocked[2]["reason"])
+        self.assertIn("Eligible at", blocked[2]["reason"])
+        self.assertNotIn("Escalates to Retry now / park", blocked[2]["reason"])
+
+
     def test_dependency_hold_text_names_upstream_cause_same_and_cross_project(self):
         self._vetting_wait("groundwork", 1)
         names = [p for p in self.cfg["projects"] if p != "groundwork"]

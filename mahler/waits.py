@@ -20,6 +20,7 @@ RESUMES = ("verifying", "ready", "inbox")
 BACKOFF_MINUTES = (15, 30, 60, 120, 240, 360)   # capped at the last value
 # A cause whose first retry must not come sooner than this (mahler#1261).
 MIN_DELAY = {"review_inconclusive": timedelta(hours=6)}
+AGE_MARGIN = timedelta(minutes=10)
 
 
 def key(project, n):
@@ -56,11 +57,16 @@ def hold(led, project, n, cause, reason, *, resume, wake=None, since=None, check
     led.set_state(project, n, "waiting", f"waiting ({cause}): {reason}",
                   question=None, options="[]")
     since = since or iso(led.now())
+    next_at_dt = led.now() + max(backoff(checks + 1), MIN_DELAY.get(cause, timedelta(0)))
+    if cause == "dependency_vetting" and isinstance(wake, dict) and wake.get("eligible_at"):
+        eligible_dt = parse(wake["eligible_at"])
+        if eligible_dt and led.now() < eligible_dt + AGE_MARGIN:
+            next_at_dt = eligible_dt + AGE_MARGIN
     led.set_kv(key(project, n), json.dumps({
         "cause": cause, "reason": reason, "resume": resume, "since": since,
         "bound_at": led.item(project, n)["state_changed_at"], "wake": wake,
         "checks": checks,
-        "next_at": iso(led.now() + max(backoff(checks + 1), MIN_DELAY.get(cause, timedelta(0))))}))
+        "next_at": iso(next_at_dt)}))
     led.event("wait", project, n, {"cause": cause, "reason": reason})
 
 
@@ -244,7 +250,7 @@ def _wake_dependency_vetting(ctx, project, item, record):
     """Re-run the gate against the PR's current head (fetching it again). Missing
     conductor evidence never launches a build or fix: a passing gate resumes
     shipping, and an evidence-only review failure is dropped so a fresh review runs."""
-    from . import ship
+    from . import dependency_vetting, ship
 
     led, n = ctx.led, item["number"]
     wake = record.get("wake") or {}
@@ -261,8 +267,25 @@ def _wake_dependency_vetting(ctx, project, item, record):
         return True, "PR is no longer open"
     sha = view.get("headRefOid") or ""
     previous = wake.get("evidence", vetting_evidence(led, project, n, pr, sha))
-    detail = ship._vet_gate(ctx, project, item, pr, gh, view)
+    res = ship._vet_gate(ctx, project, item, pr, gh, view)
+    detail, eligible_at = ship._unpack_vet_gate(res)
     if detail is not None:
+        transient = dependency_vetting.is_transient_error(detail)
+        if transient:
+            # Transient error: keep existing age marker (if any) and since clock untouched
+            record["transient"] = True
+            return False, f"transient lookup failure: {detail}"
+
+        record.pop("transient", None)
+        if eligible_at:
+            wake["eligible_at"] = eligible_at
+            record["wake"] = wake
+        else:
+            if "eligible_at" in wake:
+                wake.pop("eligible_at", None)
+                record["wake"] = wake
+                record["since"] = iso(led.now())
+
         reason = ship.vetting_reason(pr, detail, kind)
         if reason != record.get("reason"):
             led.set_state(project, n, "waiting", f"waiting (dependency_vetting): {reason}",
@@ -342,9 +365,18 @@ def _recheck_item(ctx, project, item):
     cause = record["cause"]
     since = parse(record["since"])
     limit = ctx.policy(project)["wait_escalate_hours"]
-    if since and now - since >= timedelta(hours=limit):
-        _backstop(ctx, project, item, record, int((now - since).total_seconds() // 3600))
-        return
+    wake = record.get("wake") or {}
+    eligible_str = wake.get("eligible_at") if (cause == "dependency_vetting" and isinstance(wake, dict)) else None
+    eligible_dt = parse(eligible_str) if eligible_str else None
+
+    if eligible_dt:
+        if now >= eligible_dt and now - eligible_dt >= timedelta(hours=limit):
+            _backstop(ctx, project, item, record, int((now - eligible_dt).total_seconds() // 3600))
+            return
+    else:
+        if since and now - since >= timedelta(hours=limit):
+            _backstop(ctx, project, item, record, int((now - since).total_seconds() // 3600))
+            return
     next_at = parse(record["next_at"])
     if next_at and now < next_at:
         return
@@ -357,9 +389,19 @@ def _recheck_item(ctx, project, item):
         ctx.say(f"{project}#{n}: wait over ({cause}) — {record['resume']}")
         return
     record["checks"] = int(record.get("checks") or 0) + 1
-    record["next_at"] = iso(now + backoff(record["checks"] + 1))
+    next_delay = backoff(record["checks"] + 1)
+    wake = record.get("wake") or {}
+    eligible_str = wake.get("eligible_at") if (cause == "dependency_vetting" and isinstance(wake, dict)) else None
+    eligible_dt = parse(eligible_str) if eligible_str else None
+    if eligible_dt and now < eligible_dt + AGE_MARGIN:
+        if record.pop("transient", None):
+            record["next_at"] = iso(min(now + next_delay, eligible_dt + AGE_MARGIN))
+        else:
+            record["next_at"] = iso(eligible_dt + AGE_MARGIN)
+    else:
+        record.pop("transient", None)
+        record["next_at"] = iso(now + next_delay)
     if cause == "dependency_vetting":
-        wake = record.get("wake") or {}
         pr = item["pr"] or wake.get("pr")
         if pr:
             save_vetting_carry(led, project, n, pr, wake.get("kind") or "gate",
