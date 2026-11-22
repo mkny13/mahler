@@ -183,6 +183,8 @@ class WaitTests(unittest.TestCase):
                 self.assertIsNone(self.led.get_kv(key))
 
         self.assertEqual(len(comments), 2)
+        self.assertEqual(self.led.get_kv(key), "commented")
+        self.assertEqual(record["checks"], 2)
 
     def test_vetting_wait_age_only_does_not_escalate_at_72h_and_resumes_at_eligible_plus_margin(self):
         self.led.upsert_item("p", 1, pr=88)
