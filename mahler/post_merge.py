@@ -365,6 +365,36 @@ def _advance(ctx, row, policy):
         _launch(ctx, row, policy, directory, command)
 
 
+def _release_named_failures(ctx, project, number, item):
+    """A live Mahler fix releases only the cross-project fallout it names."""
+    from . import config
+    from .gh import referenced_items
+    from .sync import resume_item
+    key = f"named-failures-released:{project}:{number}"
+    if project != "mahler" or not item or ctx.led.get_kv(key):
+        return
+    projects = config.enabled_projects(ctx.cfg)
+    url = f"https://github.com/{ctx.policy(project)['repo']}/issues/{number}"
+    text = (item["title"] or "") + "\n" + (item["issue_body"] or "")
+    for target, n in referenced_items(text, project, projects):
+        target_key = f"{key}:{target}:{n}"
+        failure = ctx.led.item(target, n)
+        if (ctx.led.get_kv(target_key) or not failure
+                or failure["state"] not in ("failed", "needs_you")):
+            continue
+        gh = ctx.gh(target)
+        marker = f"<!-- mahler:named-fix {project}#{number} -->"
+        if not any(marker in c.get("body", "") for c in gh.issue_comments(n)):
+            gh.comment_create(n, f"<!-- mahler:agent -->\n{marker}\n"
+                              f"Resuming after the Mahler fix {url} passed its live/smoke check.")
+        with ctx.led._tx():
+            resume_item(ctx.led, target, n, why=f"Mahler fix {url} is live")
+            ctx.led.event("named_failures_released", target, n,
+                          {"fix_project": project, "fix_number": number, "fix_url": url})
+            ctx.led.set_kv(target_key, "done")
+    ctx.led.set_kv(key, "done")
+
+
 def _deliver(ctx, row):
     """Recover an uncertain post by looking up its exact immutable reference.
 
@@ -372,8 +402,6 @@ def _deliver(ctx, row):
     """
     from .gh import completion_evidence
     key = "post-merge-evidence:" + str(_directory(row))
-    if ctx.led.get_kv(key):
-        return
     uat = ctx.led.uat(row["project"], row["number"])
     latest = ctx.led.q1("SELECT merge_sha FROM post_merge_checks WHERE project=? AND number=? "
                         "ORDER BY created_at DESC, rowid DESC LIMIT 1",
@@ -381,14 +409,16 @@ def _deliver(ctx, row):
     if (not uat or uat["sha"] != row["merge_sha"]
             or latest["merge_sha"] != row["merge_sha"]):
         return
-    body = "Smoke: PASS report=" + Path(row["evidence_ref"]).as_uri()
-    gh = ctx.gh(row["project"])
-    for comment in gh.issue_comments(row["number"]):
-        if comment.get("body", "").strip() == body and completion_evidence(comment, uat["shipped_at"]):
-            ctx.led.set_kv(key, "posted")
-            return
-    gh.comment_create(row["number"], body)
-    ctx.led.set_kv(key, "posted")
+    if not ctx.led.get_kv(key):
+        body = "Smoke: PASS report=" + Path(row["evidence_ref"]).as_uri()
+        gh = ctx.gh(row["project"])
+        if not any(comment.get("body", "").strip() == body
+                   and completion_evidence(comment, uat["shipped_at"])
+                   for comment in gh.issue_comments(row["number"])):
+            gh.comment_create(row["number"], body)
+        ctx.led.set_kv(key, "posted")
+    _release_named_failures(ctx, row["project"], row["number"],
+                            ctx.led.item(row["project"], row["number"]))
 
 
 def pause_diagnostic(led, project):

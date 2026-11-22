@@ -1455,6 +1455,18 @@ def dependency_target(dep, project, projects):
     return (matches[0], dep["number"]) if len(matches) == 1 else None
 
 
+def referenced_items(body, project, projects):
+    """Resolve whole-token repository issue references to other managed projects."""
+    targets = []
+    for ref in re.finditer(r"(?<![\w./#-])(?P<repo>[\w.-]+(?:/[\w.-]+)?)"
+                           r"#(?P<number>\d+)(?!\w)", body or ""):
+        target = dependency_target({"repo": ref["repo"], "number": int(ref["number"])},
+                                   project, projects)
+        if target and target[0] != project and target not in targets:
+            targets.append(target)
+    return targets
+
+
 def dependency_ref(dep, project):
     """Human-readable hold diagnostics, preserving the authored qualifier."""
     return (f"{project}#{dep}" if isinstance(dep, int) else
