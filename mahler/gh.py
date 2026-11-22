@@ -1231,6 +1231,8 @@ class GH:
         return lines[line - 1] if 0 < line <= len(lines) else None
 
     def pr_merge(self, number, head):
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", head):
+            raise GHError("merge: missing or invalid PR head SHA")
         self._gh("pr", "merge", str(number), "-R", self.repo, "--squash", "--delete-branch",
                  "--match-head-commit", head)
 
