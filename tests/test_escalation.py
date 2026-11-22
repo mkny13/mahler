@@ -86,11 +86,11 @@ class TierEscalationTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _end_run(self, project, number, platform, started_at=None):
+    def _end_run(self, project, number, platform, started_at=None, role="build"):
         now = self.led.now()
         started = iso(now - timedelta(minutes=started_at)) if started_at else iso(now)
         run_id = self.led.create_run(
-            project=project, number=number, role="build", platform=platform, epoch=1,
+            project=project, number=number, role=role, platform=platform, epoch=1,
             log_path=self.log_path, status_path=self.status_path,
             worktree=self.tmp.name)
         self.led.con.execute("UPDATE runs SET started_at=? WHERE id=?", (started, run_id))
@@ -497,6 +497,125 @@ class TierEscalationTests(unittest.TestCase):
         item = self.led.item("p", 8)
         self.assertEqual(item["esc_tier"], 2)
         self.assertEqual(item["esc_fails"], 0)
+
+    def test_sort_escalation_respects_esc_tier(self):
+        now = self.led.now()
+        later = iso(now + timedelta(hours=6))
+        for p in ("kilo", "cline-free", "agy-claude"):
+            self.led.record_usage(p, "5h", 10.0, later)
+            self.led.record_usage(p, "weekly", 10.0, later)
+
+        self.ctx.cfg["routing"]["sort"] = ["kilo", "cline-free", "agy-claude"]
+
+        # Item starts in inbox
+        self.led.upsert_item("p", 9, title="sort escalation item", state="inbox")
+        item = self.led.item("p", 9)
+        self.assertEqual(item["esc_tier"], 0)
+        self.assertEqual(item["esc_fails"], 0)
+
+        projects = [{"name": "p", "repo": "o/p", "max_parallel": 1, "path": self.tmp.name, "explore": False}]
+
+        # 1st schedule pass: free-first (D33) routes initial sort to tier-1 platform (kilo)
+        started = []
+        with mock.patch("mahler.tick.start", side_effect=lambda *args, **kw: started.append(args[4]) or True), \
+             mock.patch.object(platforms, "available", return_value=True):
+            tick.schedule(self.ctx, projects)
+        self.assertEqual(started, ["kilo"])
+
+        # Fail twice on tier-1 platform (kilo)
+        self._end_run("p", 9, "kilo", role="sort")
+        item = self.led.item("p", 9)
+        self.assertEqual(item["esc_tier"], 0)
+        self.assertEqual(item["esc_fails"], 1)
+
+        self._end_run("p", 9, "kilo", role="sort")
+        item = self.led.item("p", 9)
+        self.assertEqual(item["esc_tier"], 2)
+        self.assertEqual(item["esc_fails"], 0)
+
+        # 3rd schedule pass: routes to tier-2+ platform (agy-claude), not tier-0/1 (cline-free)
+        started = []
+        with mock.patch("mahler.tick.start", side_effect=lambda *args, **kw: started.append(args[4]) or True), \
+             mock.patch.object(platforms, "available", return_value=True):
+            tick.schedule(self.ctx, projects)
+        self.assertEqual(started, ["agy-claude"])
+
+    def test_sort_escalation_groundwork_reproduction(self):
+        # Reproduces groundwork#497:
+        # Run 1 fails on kilo (tier 1)
+        # Run 2 fails on agy-gemini (tier 3) -> escalates to tier 3
+        # Run 3 should route to tier 3 (claude), not back to kilo (tier 1)
+        now = self.led.now()
+        later = iso(now + timedelta(hours=6))
+        for p in ("kilo", "agy-gemini", "claude"):
+            self.led.record_usage(p, "5h", 10.0, later)
+            self.led.record_usage(p, "weekly", 10.0, later)
+
+        self.ctx.cfg["routing"]["sort"] = ["kilo", "agy-gemini", "claude"]
+        self.led.upsert_item("p", 10, title="groundwork sort item", state="inbox")
+
+        self._end_run("p", 10, "kilo", role="sort")
+        self._end_run("p", 10, "agy-gemini", role="sort")
+        item = self.led.item("p", 10)
+        self.assertEqual(item["esc_tier"], 3)
+
+        projects = [{"name": "p", "repo": "o/p", "max_parallel": 1, "path": self.tmp.name}]
+        started = []
+        with mock.patch("mahler.tick.start", side_effect=lambda *args, **kw: started.append(args[4]) or True), \
+             mock.patch.object(platforms, "available", return_value=True):
+            tick.schedule(self.ctx, projects)
+        self.assertEqual(started, ["claude"])
+
+    def test_sort_risk_keywords_elevate_min_tier(self):
+        now = self.led.now()
+        later = iso(now + timedelta(hours=6))
+        for p in ("kilo", "agy-claude"):
+            self.led.record_usage(p, "5h", 10.0, later)
+            self.led.record_usage(p, "weekly", 10.0, later)
+
+        self.ctx.cfg["routing"]["sort"] = ["kilo", "agy-claude"]
+
+        # Title mentions recipes/sort.md (risk keyword)
+        self.led.upsert_item("p", 11, title="fix recipes/sort.md prompt", state="inbox")
+
+        projects = [{"name": "p", "repo": "o/p", "max_parallel": 1, "path": self.tmp.name}]
+        started = []
+        with mock.patch("mahler.tick.start", side_effect=lambda *args, **kw: started.append(args[4]) or True), \
+             mock.patch.object(platforms, "available", return_value=True):
+            tick.schedule(self.ctx, projects)
+        # risk_min_tier elevates min_tier to 2, so kilo (tier 1) is rejected, agy-claude is picked
+        self.assertEqual(started, ["agy-claude"])
+
+    def test_plan_escalation_respects_esc_tier(self):
+        now = self.led.now()
+        later = iso(now + timedelta(hours=6))
+        for p in ("kilo", "claude-opus"):
+            self.led.record_usage(p, "5h", 10.0, later)
+            self.led.record_usage(p, "weekly", 10.0, later)
+
+        self.ctx.cfg["routing"]["plan"] = ["kilo", "claude-opus"]
+
+        # Item needs plan (e.g. type:goal label) and has esc_tier=2
+        self.led.upsert_item("p", 12, title="goal item", state="inbox",
+                             labels=json.dumps(["type:goal"]), esc_tier=2)
+
+        projects = [{"name": "p", "repo": "o/p", "max_parallel": 1, "path": self.tmp.name}]
+        started = []
+        with mock.patch("mahler.tick.start", side_effect=lambda *args, **kw: started.append(args[4]) or True), \
+             mock.patch.object(platforms, "available", return_value=True):
+            tick.schedule(self.ctx, projects)
+        # kilo is tier 1 < esc_tier 2, so claude-opus (tier 4) is picked
+        self.assertEqual(started, ["claude-opus"])
+
+    def test_sort_and_plan_diagnose_enforces_min_tier(self):
+        pol = {"name": "p", "repo": "o/p", "path": self.tmp.name}
+        for role in ("sort", "plan"):
+            with self.subTest(role=role):
+                diag = router.diagnose(self.ctx.cfg, self.led, pol, role, min_tier=2)
+                # kilo is tier 1 < 2, so it has "tier" in its blocker list
+                self.assertIn("tier", diag["kilo"])
+                # agy-claude is tier 2 >= 2, so it does not have "tier"
+                self.assertNotIn("tier", diag["agy-claude"])
 
 
 if __name__ == "__main__":

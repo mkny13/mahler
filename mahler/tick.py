@@ -655,10 +655,10 @@ def _route_inputs(it, role):
     """-> (routing_role, pin, effective_min_tier, effective_size) for one candidate."""
     size = _size_label(it)
     routing_role = "plan" if (role == "sort" and needs_plan(row_get(it, "labels", "[]"))) else role
-    pin = it["pin"] if role in ("build", "fix", "sort") else None
+    pin = it["pin"] if role in ("build", "fix", "sort", "plan") else None
     effective_min_tier = (max(row_get(it, "esc_tier", 0),
                               router.risk_min_tier(row_get(it, "title", "")))
-                          if role in ("build", "fix") else 0)
+                          if role in ("build", "fix", "sort", "plan") else 0)
     effective_size = size
     if role in ("build", "fix") and effective_min_tier >= 2 and effective_size == "s":
         effective_size = "m"
