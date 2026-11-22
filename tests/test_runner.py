@@ -1340,6 +1340,14 @@ class MarkerDescriptorTests(unittest.TestCase):
         if sys.platform != "darwin":
             self.skipTest("Darwin marker inheritance test")
         out_file = self.run_dir / "child_marker_info.txt"
+        processes = []
+        real_popen = subprocess.Popen
+
+        def tracked_popen(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
         child_code = (
             "import os, pathlib, sys\n"
             f"out = pathlib.Path({str(out_file)!r})\n"
@@ -1347,13 +1355,15 @@ class MarkerDescriptorTests(unittest.TestCase):
             "out.write_text(f'{stdin_ino}')\n"
             "sys.exit(0)\n"
         )
-        leader = runner.spawn([sys.executable, "-c", child_code], self.tmp.name,
-                              str(self.log_path), str(self.status_path), env=self.env)
+        with mock.patch.object(runner.subprocess, "Popen", side_effect=tracked_popen):
+            runner.spawn([sys.executable, "-c", child_code], self.tmp.name,
+                         str(self.log_path), str(self.status_path), env=self.env)
         deadline = time.monotonic() + 5
         while not self.status_path.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         self.assertTrue(self.status_path.exists(), "Child process did not finish")
-        os.waitpid(leader, 0)
+        for process in processes:
+            process.wait(timeout=5)
         marker_path = self.run_dir / "process-marker"
         self.assertTrue(marker_path.exists())
         self.assertTrue(out_file.exists())
