@@ -2564,16 +2564,16 @@ class UatOutboxTests(unittest.TestCase):
         id = self.queue('uat_fail', note='the ping never arrived')
         self.drain()
         title, body, labels = self.gh.create_issue.call_args[0]
-        self.assertEqual(title, 'UAT fail: Wired the exporter (mahler#9)')
-        self.assertIn('**UAT item:** `mahler#9` — Wired the exporter', body)
+        self.assertEqual(title, 'Shipment failure: Wired the exporter (mahler#9)')
+        self.assertIn('**Shipment:** `mahler#9` — Wired the exporter', body)
         self.assertIn('**Area:** none', body)
         self.assertIn('**Source:** https://github.com/mkny13/mahler/pull/88', body)
         self.assertIn('the ping never arrived', body)
         self.assertIn('---', body)
-        self.assertIn('Filed automatically from the in-app UAT check. '
-                      'Passing this item again does not close this issue.', body)
+        self.assertIn('Filed from an optional console failure report. '
+                      'No manual pass verdict is required.', body)
         self.assertEqual(labels, ['type:bug', 'p1'])
-        self.gh.comment.assert_called_once_with(9, "❌ **UAT failed** — filed #42.",
+        self.gh.comment.assert_called_once_with(9, "❌ **Shipment failure reported** — filed #42.",
                                                 agent=False)
         row = self.uat()
         self.assertEqual((row['verdict'], row['bug'], row['note']),
@@ -2636,30 +2636,30 @@ class UatOutboxTests(unittest.TestCase):
 
 
 class UatBugShapeTests(unittest.TestCase):
-    """The #292 UAT-failure title and body contract."""
+    """D10 optional shipment-failure reports, without the retired UAT loop."""
 
     def test_title_uses_item_id(self):
         from mahler.console import outbox
-        self.assertEqual(outbox.uat_bug_title('mahler#9', 'Wired the exporter'),
-                         'UAT fail: Wired the exporter (mahler#9)')
+        self.assertEqual(outbox.shipment_bug_title('mahler#9', 'Wired the exporter'),
+                         'Shipment failure: Wired the exporter (mahler#9)')
 
     def test_body_contains_all_fields_and_verbatim_note(self):
         from mahler.console import outbox
-        body = outbox.uat_bug_body(
+        body = outbox.shipment_bug_body(
             'mahler#9', 'Wired the exporter', 'console',
             'https://github.com/mkny13/mahler/pull/88',
             'the ping never arrived')
-        self.assertIn('**UAT item:** `mahler#9` — Wired the exporter', body)
+        self.assertIn('**Shipment:** `mahler#9` — Wired the exporter', body)
         self.assertIn('**Area:** console', body)
         self.assertIn('**Source:** https://github.com/mkny13/mahler/pull/88', body)
         self.assertIn('the ping never arrived', body)
         self.assertTrue(body.endswith(
-            'Filed automatically from the in-app UAT check. '
-            'Passing this item again does not close this issue.'))
+            'Filed from an optional console failure report. '
+            'No manual pass verdict is required.'))
 
     def test_body_without_note_has_no_note_paragraph(self):
         from mahler.console import outbox
-        body = outbox.uat_bug_body('couch-tour#258', 'Gradient', None, '', '')
+        body = outbox.shipment_bug_body('couch-tour#258', 'Gradient', None, '', '')
         lines = body.split('\n')
         source = next(i for i, line in enumerate(lines) if line.startswith('**Source:**'))
         self.assertEqual(lines[source + 1:source + 3], ['', '---'])

@@ -18,21 +18,21 @@ def capture_title(text, limit=80):
     return cut[:sp] if sp > 0 else cut
 
 
-def uat_bug_title(item_id, title):
-    """Return the shared title shape for a UAT-failure bug."""
-    return f"UAT fail: {title} ({item_id})"
+def shipment_bug_title(item_id, title):
+    """Return the shared title shape for a shipment-failure bug."""
+    return f"Shipment failure: {title} ({item_id})"
 
 
-def uat_bug_body(item_id, title, area, source, note):
-    """Return the shared body shape for a UAT-failure bug."""
-    lines = [f"**UAT item:** `{item_id}` — {title}",
+def shipment_bug_body(item_id, title, area, source, note):
+    """Return the shared body shape for a shipment-failure bug."""
+    lines = [f"**Shipment:** `{item_id}` — {title}",
              f"**Area:** {area or 'none'}",
              f"**Source:** {source or 'none'}"]
     if note:
         lines += ["", note]
     lines += ["", "---",
-              "Filed automatically from the in-app UAT check. "
-              "Passing this item again does not close this issue."]
+              "Filed from an optional console failure report. "
+              "No manual pass verdict is required."]
     return "\n".join(lines)
 
 
@@ -107,8 +107,8 @@ def revert(ctx, row, payload):
     return prepare(ctx, row["project"], row["number"], payload["pr"])
 
 
-def uat_pending_row(ctx, project, number):
-    """The UAT row the verdict applies to, or the reason to skip."""
+def shipment_report_target(ctx, project, number):
+    """The shipment a failure report applies to, or the reason to skip."""
     if project not in {p["name"] for p in config.enabled_projects(ctx.cfg)}:
         return None, "the project is disabled"
     r = ctx.led.uat(project, number)
@@ -119,7 +119,7 @@ def uat_pending_row(ctx, project, number):
 
 def uat_fail(ctx, row, payload):
     project, number = row["project"], row["number"]
-    r, skip = uat_pending_row(ctx, project, number)
+    r, skip = shipment_report_target(ctx, project, number)
     if r is None:
         return "skipped", skip
     pol = config.project_policy(ctx.cfg, project)
@@ -138,7 +138,7 @@ def uat_fail(ctx, row, payload):
             if isinstance(label, str) and label.startswith("area:"):
                 area = label.split(":", 1)[1]
                 break
-    body = uat_bug_body(item_id, title, area, source, note)
+    body = shipment_bug_body(item_id, title, area, source, note)
     att = format_attachment(ctx.cfg, payload)
     if att:
         body = body.replace("\n\n---", f"{att}\n\n---", 1)
@@ -147,12 +147,12 @@ def uat_fail(ctx, row, payload):
     gh = ctx.gh(project)
     url = gh.issue_by_marker(marker)
     if not url:
-        url = gh.create_issue(uat_bug_title(item_id, title), body, labels)
+        url = gh.create_issue(shipment_bug_title(item_id, title), body, labels)
     try:
         bug = int(url.rstrip("/").rsplit("/", 1)[-1])
     except ValueError:
         raise ValueError(f"gh issue create: no issue number in {url[:200]!r}")
-    ctx.gh(project).comment(number, f"❌ **UAT failed** — filed #{bug}.", agent=False)
+    ctx.gh(project).comment(number, f"❌ **Shipment failure reported** — filed #{bug}.", agent=False)
     if not ctx.led.report_shipment_failure(project, number, bug=bug,
                                    note=note or None):
         return "skipped", "the verdict is already recorded"
