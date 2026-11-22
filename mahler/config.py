@@ -1541,6 +1541,14 @@ def validate_accounts(cfg):
         account = account_of(pconf)
         if account not in defined:
             raise ValueError(f"platform {name!r}: account {account!r} is not defined")
+        if (pconf.get("kind") == "claude" and not pconf.get("api_credits")
+                and account != DEFAULT_ACCOUNT):
+            account_env = (cfg.get("accounts", {}).get(account) or {}).get("env") or {}
+            if not str(account_env.get("CLAUDE_CONFIG_DIR") or "").strip():
+                raise ValueError(
+                    f"platform {name!r}: non-personal Claude accounts require "
+                    f"CLAUDE_CONFIG_DIR (DESIGN D25)"
+                )
         group = pconf.get("quota_group", name)
         owner = group_accounts.setdefault(group, account)
         if owner != account:
@@ -1564,6 +1572,20 @@ def validate_accounts(cfg):
         gh_account = gh_account_of(proj)
         if gh_account not in defined:
             raise ValueError(f"project {name!r}: gh_account {gh_account!r} is not defined")
+        if gh_account != DEFAULT_ACCOUNT and proj.get("repo"):
+            gh_env = (cfg.get("accounts", {}).get(gh_account) or {}).get("env") or {}
+            has_cli_identity = any(
+                str(gh_env.get(var) or "").strip()
+                for var in ("GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN")
+            )
+            provider, app = resolve_github_app_provider(cfg, proj)
+            has_scoped_app = provider is not None and app is not None
+            if not has_cli_identity and not has_scoped_app:
+                raise ValueError(
+                    f"project {name!r}: gh_account {gh_account!r} requires "
+                    "GH_CONFIG_DIR, GH_TOKEN, GITHUB_TOKEN, or a scoped GitHub App "
+                    "(DESIGN D25)"
+                )
         if proj.get("size_target") not in (None, "", "s"):
             raise ValueError(f"project {name!r}: size_target must be empty or s")
         if "account_mode" in proj and proj["account_mode"] not in ACCOUNT_MODES:
