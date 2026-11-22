@@ -369,7 +369,7 @@ screenshot_path = []              # inherited operator absolute executable direc
 # A work project spends only work platforms; nothing ever falls back to yours.
 # [accounts.work]
 # env = { CLAUDE_CONFIG_DIR = "~/.claude-work", COPILOT_HOME = "~/.copilot-work", CODEX_HOME = "~/.codex-work" }
-# # Configure a scoped GitHub identity for work projects: GH_CONFIG_DIR, GH_TOKEN /
+# # Configure a scoped GitHub identity for repo-backed work projects: GH_CONFIG_DIR, GH_TOKEN /
 # # GITHUB_TOKEN, or an explicitly scoped GitHub App. GH_CONFIG_DIR is optional when
 # # using one of the other identities; set each checkout's git credential helper to match.
 # # Zero-token Claude readings for this login (else a lean probe on the work login):
