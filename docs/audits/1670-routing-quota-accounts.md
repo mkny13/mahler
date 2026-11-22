@@ -141,4 +141,6 @@ The audit inspected all legacy branches and compatibility paths across the bound
 
 2. **Repository Verification Gates:**
    - `python3 -m mahler.repo_guard`: PASSED (exit 0).
-   - `python3 -m unittest discover -s tests`: Ran 3892 tests in 339.763s, OK (skipped=2, exit 0).
+   - `python3 -m unittest discover -s tests`: Ran 3892 tests in 339.763s (baseline) / Ran 3896 tests with additions, OK (skipped=2, exit 0).
+   - `python3 tests/run_random.py`: Random order seed 1086974516, Ran 3896 tests in 331.336s, OK (skipped=2, exit 0).
+   - `python3 -X dev tests/run_strict.py`: Ran 3896 tests in 339.110s, OK (skipped=2, exit 0).
