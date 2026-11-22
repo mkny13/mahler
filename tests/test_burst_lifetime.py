@@ -10,7 +10,10 @@ from unittest.mock import Mock, patch
 
 from mahler import config, presence, runner, usage, watchdog
 from mahler.ledger import Ledger, iso
-from test_accounts import NOW, work_cfg
+try:
+    from test_accounts import NOW, work_cfg
+except ImportError:
+    from .test_accounts import NOW, work_cfg
 
 
 class BurstLifetimeTests(unittest.TestCase):

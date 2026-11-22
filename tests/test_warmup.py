@@ -11,7 +11,10 @@ from mahler import config, platforms, scheduler, usage, warmup
 from mahler.ledger import Ledger, iso
 from mahler.scheduler import Ctx
 
-from local_timezone import local_timezone
+try:
+    from local_timezone import local_timezone
+except ImportError:
+    from .local_timezone import local_timezone
 
 
 class WarmupTests(unittest.TestCase):

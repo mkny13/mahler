@@ -147,3 +147,54 @@ class FailedSortRoutingTests(unittest.TestCase):
             self.assertEqual(chosen, 'platform_a')
 
 
+class AccountBoundaryAndFailClosedTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 9, 12, 12, tzinfo=timezone.utc)
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg['accounts'] = {'work': {'env': {'CLAUDE_CONFIG_DIR': '/tmp/work'}}}
+        self.cfg['platforms']['work-claude'] = copy.deepcopy(self.cfg['platforms']['claude'])
+        self.cfg['platforms']['work-claude']['account'] = 'work'
+        self.cfg['platforms']['work-claude']['quota_group'] = 'claude@work'
+        self.led = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+
+    def test_cross_account_pin_refused_with_reason(self):
+        pol = {'name': 'p1', 'account': 'personal'}
+        with mock.patch.object(platforms, 'available', return_value=True):
+            for window in ('5h', 'weekly'):
+                self.led.record_usage('work-claude', window, 10, iso(self.now + timedelta(days=3)))
+            chosen, reasons = router.pick_for_project(self.cfg, self.led, pol, 'build', pin='work-claude')
+            self.assertIsNone(chosen)
+            self.assertTrue(any('spends the work account, not personal' in r for r in reasons))
+
+    def test_priority_mode_refuses_undeclared_account_platforms(self):
+        cands = router.candidates_for_priority(
+            self.cfg, 'build', ['personal'],
+            {'build': ['work-claude', 'agy-claude']}
+        )
+        self.assertNotIn('work-claude', cands)
+        self.assertIn('agy-claude', cands)
+
+    def test_fail_closed_on_stale_quota_sample(self):
+        pol = {'name': 'p1', 'account': 'personal'}
+        self.led.record_usage('claude', '5h', 10, iso(self.now - timedelta(hours=1)))
+        chosen, reasons = router.pick_for_project(self.cfg, self.led, pol, 'build', pin='claude')
+        self.assertIsNone(chosen)
+        self.assertTrue(any('stale' in r for r in reasons))
+
+    def test_max_size_refuses_oversized_candidate_without_pin(self):
+        pol = {'name': 'p1', 'account': 'personal'}
+        self.cfg['routing']['build'] = ['claude-low']
+        with mock.patch.object(platforms, 'available', return_value=True):
+            for window in ('5h', 'weekly'):
+                self.led.record_usage('claude-low', window, 10, iso(self.now + timedelta(days=3)))
+            chosen, reasons = router.pick_for_project(self.cfg, self.led, pol, 'build', pin='claude-low', size='m')
+            # Pin overrides size limit
+            self.assertEqual(chosen, 'claude-low')
+
+            # Without pin, size:m is refused on claude-low (max_size: s)
+            chosen, reasons = router.pick_for_project(self.cfg, self.led, pol, 'build', size='m')
+            self.assertTrue(any('claude-low: only takes size:s' in r for r in reasons))
+
+
+
