@@ -1,3 +1,4 @@
+import ast
 import copy
 import hashlib
 import json
@@ -219,6 +220,153 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertEqual(self.results()["ci-tests"].state, "gap")
         self.write(".github/workflows/ci.yml", WORKFLOW.replace("pull_request:", "push:"))
         self.assertEqual(self.results()["ci-tests"].state, "gap")
+
+    def test_workflow_characterization_matrix(self):
+        path = ".github/workflows/ci.yml"
+        test_command = "python3 -m unittest discover -s tests"
+        cases = (
+            (
+                "absent trigger",
+                "name: CI\njobs:\n  test:\n    steps:\n"
+                f"      - run: {test_command}\n",
+                (True, (), True, False),
+                ("unknown", "No proven unconditional PR test execution; workflow semantics need review.",
+                 (".github/workflows: no literal PR run commands found",)),
+                (),
+            ),
+            (
+                "non-PR trigger",
+                "name: CI\non:\n  push:\njobs:\n  test:\n    steps:\n"
+                f"      - run: {test_command}\n",
+                (False, (), False, False),
+                ("gap", "No test invocation found in PR CI (a build alone is insufficient).",
+                 (".github/workflows: no literal PR run commands found",)),
+                (),
+            ),
+            (
+                "PR branch filter",
+                "name: CI\non:\n  pull_request:\n    branches: [main]\njobs:\n"
+                "  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+                f"      - run: {test_command}\n",
+                (True, ("test",), True, False),
+                ("unknown", "No proven unconditional PR test execution; workflow semantics need review.",
+                 (f"{path}:9 job=test run: {test_command}",)),
+                ((test_command, f"{path}:9 job=test run: {test_command}", True,
+                  ("Workflow pull_request trigger has filters.",),
+                  (f"{path}:4: PR trigger filter",)),),
+            ),
+            (
+                "PR type filter",
+                "name: CI\non:\n  pull_request:\n    types: [opened]\njobs:\n"
+                "  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+                f"      - run: {test_command}\n",
+                (True, ("test",), True, False),
+                ("unknown", "No proven unconditional PR test execution; workflow semantics need review.",
+                 (f"{path}:9 job=test run: {test_command}",)),
+                ((test_command, f"{path}:9 job=test run: {test_command}", True,
+                  ("Workflow pull_request trigger has filters.",),
+                  (f"{path}:4: PR trigger filter",)),),
+            ),
+            (
+                "auxiliary event type",
+                "name: Cleanup\non:\n  pull_request:\n    types: [closed]\njobs:\n"
+                "  cleanup:\n    runs-on: ubuntu-latest\n    steps:\n"
+                "      - run: echo cleanup\n",
+                (False, (), False, True),
+                ("gap", "No test invocation found in PR CI (a build alone is insufficient).",
+                 (f"{path}:9 job=cleanup run: echo cleanup",)),
+                (("echo cleanup", f"{path}:9 job=cleanup run: echo cleanup", False, (), ()),),
+            ),
+            (
+                "YAML anchor",
+                "name: CI\non:\n  pull_request:\nenv: &shared\n  MODE: test\njobs:\n"
+                "  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+                f"      - run: {test_command}\n",
+                (True, ("test",), True, False),
+                ("unknown", "No proven unconditional PR test execution; workflow semantics need review.",
+                 (f"{path}:10 job=test run: {test_command}",)),
+                ((test_command, f"{path}:10 job=test run: {test_command}", False, (), ()),),
+            ),
+            (
+                "reusable workflow",
+                "name: CI\non:\n  pull_request:\njobs:\n  test:\n"
+                "    uses: owner/repo/.github/workflows/test.yml@main\n",
+                (True, (), True, False),
+                ("unknown", "No proven unconditional PR test execution; workflow semantics need review.",
+                 (".github/workflows: no literal PR run commands found",)),
+                (),
+            ),
+            (
+                "changed working directory",
+                "name: CI\non:\n  pull_request:\njobs:\n  test:\n"
+                "    runs-on: ubuntu-latest\n    steps:\n"
+                "      - working-directory: subdir\n"
+                f"        run: {test_command}\n",
+                (True, ("test",), False, False),
+                ("unknown", "No proven unconditional PR test execution; workflow semantics need review.",
+                 (f"{path}:9 job=test run: {test_command}",)),
+                ((test_command, f"{path}:9 job=test run: {test_command}", True,
+                  ("Verify command runs in a changed working directory.",),
+                  (f"{path}:8: changed working directory",)),),
+            ),
+            (
+                "literal job and run step",
+                "name: CI\non:\n  pull_request:\njobs:\n  test:\n    name: Unit tests\n"
+                "    runs-on: ubuntu-latest\n    steps:\n"
+                f"      - run: {test_command}\n",
+                (False, ("Unit tests",), False, False),
+                ("pass", "PR CI invokes test commands; test quality is not assessed.",
+                 (f"{path}:9 job=Unit tests run: {test_command}",)),
+                ((test_command, f"{path}:9 job=Unit tests run: {test_command}", False, (), ()),),
+            ),
+            (
+                "dynamic job and run step",
+                "name: CI\non:\n  pull_request:\njobs:\n  test:\n"
+                "    name: Tests ${{ matrix.python }}\n"
+                "    runs-on: ubuntu-latest\n    steps:\n"
+                "      - run: python3 -m unittest ${{ matrix.args }}\n",
+                (True, ("Tests ${{ matrix.python }}",), False, False),
+                ("unknown", "No proven unconditional PR test execution; workflow semantics need review.",
+                 (f"{path}:9 job=Tests ${{{{ matrix.python }}}} run: "
+                  "python3 -m unittest ${{ matrix.args }}",)),
+                (("python3 -m unittest ${{ matrix.args }}",
+                  f"{path}:9 job=Tests ${{{{ matrix.python }}}} run: "
+                  "python3 -m unittest ${{ matrix.args }}", True,
+                  ("Verify command uses dynamic expansion or evaluation.",),
+                  (f"{path}:9: dynamic command",)),),
+            ),
+        )
+
+        for name, workflow, expected_flags, expected_finding, expected_commands in cases:
+            with self.subTest(case=name):
+                self.write(path, workflow)
+                tree = audit._Tree(self.temp.name)
+                result = audit._workflow(tree, path)
+                finding, _, _, _ = audit._ci(tree)
+                flags = (result[1], tuple(result[2]), result[3], result.is_auxiliary)
+                commands = tuple(
+                    (row.cmd, row.cite, row.uncertain, row.reasons, row.uncertain_cites)
+                    for row in result[0]
+                )
+                self.assertEqual(flags, expected_flags)
+                self.assertEqual(
+                    (finding.state, finding.reason, finding.evidence), expected_finding)
+                self.assertEqual(commands, expected_commands)
+
+    def test_workflow_parser_functions_have_bounded_branch_nodes(self):
+        source = Path(audit.__file__).read_text(encoding="utf-8")
+        module = ast.parse(source)
+        branches = (ast.If, ast.For, ast.While, ast.ExceptHandler,
+                    ast.IfExp, ast.comprehension)
+        counts = {
+            node.name: sum(isinstance(child, branches) for child in ast.walk(node))
+            for node in module.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and (node.name == "_workflow" or node.name.startswith("_workflow_"))
+        }
+        self.assertIn("_workflow", counts)
+        self.assertTrue(any(name != "_workflow" for name in counts), counts)
+        self.assertEqual({}, {name: count for name, count in counts.items() if count > 30})
 
     def test_conditional_and_reusable_workflows_are_unknown(self):
         for workflow in (WORKFLOW.replace("runs-on:", "if: false\n    runs-on:"),
