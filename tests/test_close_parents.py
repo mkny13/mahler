@@ -42,6 +42,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.gh.parent_issue_inventory.return_value = self.remote
         self.gh.issue_by_marker.side_effect = lambda marker: next(
             (r['html_url'] for r in self.remote if marker in r.get('body', '')), None)
+        self.gh.issue_closed_by.return_value = {}
         self.gh.sub_issues.return_value = []
         self.gh._parent_pages.return_value = []
         self.gh.closing_prs.return_value = [{"number": 99, "state": "MERGED"}]
@@ -337,6 +338,81 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.led.upsert_item("mahler", 11, parent=10, state="done", pr=None)
         self.remote.append({"number": 11, "state": "closed", "state_reason": reason,
                             "title": "child", "body": "Part of #10"})
+
+    def test_owner_closed_completed_child_resolves(self):
+        self._unmerged_with_reason("completed")
+        self.remote[-1]["closed_by"] = {"login": "mkny13"}
+        self.comments[11] = [{"author": {"login": "mkny13"}, "body": "Enabled as requested"}]
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+        self.gh.close_issue.assert_called_once_with(10)
+        self.assertIn("#11: closed by owner with comment", self.comments[10][-1]["body"])
+
+    def test_owner_closure_reads_missing_attribution_without_ticking_merge(self):
+        self._unmerged_with_reason("completed", "## Done when\n- [ ] #11 merged")
+        self.gh.issue_closed_by.return_value = {"login": "mkny13"}
+        self.comments[11] = [{"author": {"login": "mkny13"}, "body": "Enabled"}]
+        self.run_pass()
+        self.gh.issue_closed_by.assert_called_once_with(11)
+        self.gh.close_issue.assert_not_called()
+        self.assertIn("- [ ] #11 merged", self.bodies[10])
+
+    def test_owner_closure_requires_owner_actor_and_nonempty_owner_comment(self):
+        for closer, author, body in (("outsider", "mkny13", "done"),
+                                     ("mkny13", "outsider", "done"),
+                                     ("mkny13", "mkny13", " ")):
+            with self.subTest(closer=closer, author=author, body=body):
+                self.setUp()
+                self._unmerged_with_reason("completed")
+                self.remote[-1].update(closed_by={"login": closer}, author_association="OWNER")
+                self.comments[11] = [{"author": {"login": author}, "body": body}]
+                self.run_pass()
+                self.gh.close_issue.assert_not_called()
+
+    def test_verified_unmerged_child_resolves_only_with_confirmed_scoped_evidence(self):
+        for case in ("accepted", "unmerged", "unmet", "other-child", "other-parent", "unreviewed", "foreign-pr"):
+            with self.subTest(case=case):
+                self.setUp()
+                self._unmerged_with_reason("completed")
+                self.gh.pr_merge_info.return_value = {"state": "CLOSED" if case == "unmerged" else "MERGED"}
+                record = {"parent": 100 if case == "other-parent" else 10,
+                          "verify": 1640, "run": 15123, "done": case != "unreviewed",
+                          "entries": [{"met": case != "unmet",
+                                       "criterion": "#110: superseded" if case == "other-child" else
+                                       "#11: closed without confirmed merged PR evidence",
+                                       "evidence": "Covered by PR #1599 and https://github.com/mkny13/mahler/pull/1629"}]}
+                if case == "foreign-pr":
+                    record["entries"][0]["evidence"] = "https://github.com/other/repo/pull/1599"
+                self.led.set_kv(sync.evidence_key("mahler", 1640, 15123), json.dumps(record))
+                if case == "unreviewed":
+                    from mahler import no_change
+                    no_change.save(self.led, "mahler", 1640, {"phase": "reviewing", "claim_run": 15123})
+                self.run_pass()
+                self.assertEqual(self.led.item("mahler", 10)["state"],
+                                 "done" if case == "accepted" else "parent")
+                if case == "accepted":
+                    self.gh.close_issue.assert_called_once_with(10)
+                    self.assertIn("verified by #1640", self.comments[10][-1]["body"])
+
+    def test_740_owner_closed_child_with_verify_evidence_completes(self):
+        self.led.set_state("mahler", 10, "done", "fixture")
+        self.led.upsert_item("mahler", 740, state="parent")
+        self.led.upsert_item("mahler", 1038, parent=740, state="done")
+        self.bodies[740] = "## Done when\n- [x] Enablement proven"
+        self.states.update({740: "OPEN", 1038: "CLOSED"})
+        self.gh.closing_prs.return_value = []
+        self.remote.append({"number": 1038, "state_reason": "completed",
+                            "closed_by": {"login": "mkny13"}})
+        self.comments[1038] = [{"author": {"login": "mkny13"}, "body": "Enabled"}]
+        self.gh.pr_merge_info.return_value = {"state": "MERGED"}
+        self.led.set_kv(sync.evidence_key("mahler", 1640, 15123), json.dumps({
+            "parent": 740, "verify": 1640, "run": 15123, "done": False,
+            "entries": [{"met": True, "criterion": "#1038: closed without confirmed merged PR evidence",
+                         "evidence": "PR #1599 and PR #1629 cover enablement"}]}))
+        self.run_pass()
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 740)["state"], "done")
+        self.gh.close_issue.assert_called_once_with(740)
 
     def test_disposition_matrix(self):
         for reason, resolves in (("not_planned", True), ("duplicate", True),

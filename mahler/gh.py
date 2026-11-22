@@ -400,6 +400,11 @@ class GH:
         out = self._gh("issue", "view", str(number), "-R", self.repo, "--json", "state")
         return json.loads(out)["state"]          # OPEN | CLOSED
 
+    def issue_closed_by(self, number):
+        """REST closure attribution, absent from some inventory payloads."""
+        issue = json.loads(self._gh("api", f"repos/{self.repo}/issues/{int(number)}"))
+        return issue.get("closed_by") or {}
+
     def issue_relocation(self, number):
         """Check REST API for an issue's transferred destination or deletion.
 
