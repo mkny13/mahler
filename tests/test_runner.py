@@ -1210,16 +1210,24 @@ class MarkerDescriptorTests(unittest.TestCase):
         closed_marker_fds = []
         real_open = os.open
         real_close = os.close
+        marker_inodes = {}
 
         def tracking_open(path, flags, *args, **kwargs):
             fd = real_open(path, flags, *args, **kwargs)
             if "process-marker" in str(path):
                 opened_marker_fds.append(fd)
+                marker_inodes[fd] = os.fstat(fd).st_ino
             return fd
 
         def tracking_close(fd):
             if fd in opened_marker_fds:
-                closed_marker_fds.append(fd)
+                # The fd number may be reused later; count only the marker file.
+                try:
+                    same = os.fstat(fd).st_ino == marker_inodes[fd]
+                except OSError:
+                    same = False
+                if same:
+                    closed_marker_fds.append(fd)
             return real_close(fd)
 
         def is_open(fd):

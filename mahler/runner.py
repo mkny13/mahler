@@ -375,8 +375,13 @@ def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix="", s
         marker_path = gate.with_name("process-marker")
         marker_flags = os.O_RDONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
         marker_fd = os.open(marker_path, marker_flags, 0o600)
-        os.fchmod(marker_fd, 0o600)
-        marker_stream = os.fdopen(marker_fd, "rb")
+        try:
+            os.fchmod(marker_fd, 0o600)
+            marker_stream = os.fdopen(marker_fd, "rb")
+        except BaseException:
+            # Ownership has not reached a stream yet; close the raw fd once.
+            os.close(marker_fd)
+            raise
         pass_fds = (marker_fd,)
     try:
         proc = subprocess.Popen(["/bin/sh", "-c", prefix + shell], cwd=cwd, env=env,
