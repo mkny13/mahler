@@ -798,8 +798,8 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
             reasons.append(f"{name}: on hold for {project} until {held.astimezone():%H:%M} "
                            f"(in {fmt_countdown(held - led.now())}) (its login was refused here)")
             continue
-        # Explicit tier floors apply to build, fix and review; pins retain their override.
-        if min_tier and not pin and role in ("build", "fix", "review"):
+        # Explicit tier floors apply to build, fix, review, sort and plan; pins retain their override.
+        if min_tier and not pin and role in ("build", "fix", "review", "sort", "plan"):
             t = tier_of(pconf)
             if t < min_tier:
                 reasons.append(f"{name}: tier {t} below escalation tier {min_tier}")
@@ -888,7 +888,7 @@ def diagnose(cfg, led, pol, role, pin=None, busy=(), size=None, burst_lines=None
         if name in busy and "unavailable" not in why:
             why.append("slots_busy")
         is_pin = pin == name
-        if min_tier and not is_pin and role in ("build", "fix", "review") and tier_of(pconf) < min_tier:
+        if min_tier and not is_pin and role in ("build", "fix", "review", "sort", "plan") and tier_of(pconf) < min_tier:
             why.append("tier")
         limit = pconf.get("max_size")
         rank = SIZES.get(size or "m", 2)
