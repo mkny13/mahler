@@ -34,7 +34,7 @@ import shutil
 from datetime import datetime, timedelta
 
 from . import config, runner
-from .ledger import parse
+from .ledger import iso, parse
 
 KV_KEY = "last_janitor_date"
 WT_RE = re.compile(r"(\d+)-run(\d+)$")
@@ -285,6 +285,11 @@ def _fast_forward_primary(ctx, pol, repo, env=None):
     particular, a failed ancestry check is treated as a diverged checkout and
     left alone: a local commit must never be rewritten by maintenance.
     """
+    # D13: even a clean primary checkout must not move under an active
+    # session. Expired leases and leases for other projects do not block it.
+    if ctx.led.q1("SELECT 1 FROM leases WHERE project=? AND expires_at>? LIMIT 1",
+                  (pol["name"], iso(ctx.led.now()))):
+        return False
     base = pol.get("base", "main")
     try:
         if runner.git(repo, "symbolic-ref", "--short", "HEAD") != base:

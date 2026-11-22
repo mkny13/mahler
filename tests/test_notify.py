@@ -37,6 +37,20 @@ class TestSend(unittest.TestCase):
         req = urlopen.call_args[0][0]
         self.assertEqual(req.get_header("Title"), "Mahler needs you - mahler #45")
 
+    def test_credential_bearing_click_is_not_sent_to_notification_service(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            notify.send(self._cfg(), "Title", "Body",
+                        click="https://console.example/?token=private-value")
+        req = urlopen.call_args[0][0]
+        self.assertIsNone(req.get_header("Click"))
+        self.assertNotIn("private-value", str(req.header_items()))
+
+    def test_safe_console_click_is_preserved(self):
+        link = "https://console.example/?project=mahler"
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            notify.send(self._cfg(), "Title", click=link)
+        self.assertEqual(urlopen.call_args[0][0].get_header("Click"), link)
+
     def test_no_topic_configured_is_a_noop(self):
         self.assertFalse(notify.send({"ntfy": {}}, "title"))
 

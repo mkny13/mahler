@@ -479,7 +479,7 @@ def atlas_issue_undo(cfg, led, body):
 
 # ---------- Shipment failure reports ----------
 
-def _uat_target(cfg, led, body):
+def _shipment_target(cfg, led, body):
     project, number = body.get("project"), body.get("number")
     if not isinstance(project, str) or \
             project not in {p["name"] for p in config.enabled_projects(cfg)}:
@@ -492,22 +492,22 @@ def _uat_target(cfg, led, body):
     return row
 
 
-def _verdict_pending(led, project, number):
-    """A verdict queued but not yet run (capture can lag): nothing else may
+def _failure_report_pending(led, project, number):
+    """A failure report queued but not yet run: nothing else may
     queue a second one."""
     return any(r["project"] == project and r["number"] == number
                for r in led.pending_actions("uat_fail"))
 
 
-def _queue_verdict(cfg, led, kind, body, payload, verdict):
+def _queue_failure_report(cfg, led, body, payload):
     with led._tx():
-        row = _uat_target(cfg, led, body)
-        if (row["bug"] or row["verdict"] == "fail") or _verdict_pending(led, row["project"], row["number"]):
+        row = _shipment_target(cfg, led, body)
+        if (row["bug"] or row["verdict"] == "fail") or _failure_report_pending(led, row["project"], row["number"]):
             raise ActionError("the verdict is already recorded or queued")
-        id = led.queue_action(kind, row["project"], row["number"], payload,
+        id = led.queue_action("uat_fail", row["project"], row["number"], payload,
                               delay_seconds=0)
         led.event("console_uat_queued", row["project"], row["number"],
-                  {"verdict": verdict, "id": id})
+                  {"verdict": "fail", "id": id})
     return {"id": id}
 
 
@@ -518,7 +518,7 @@ def uat_fail(cfg, led, body):
     payload = {"note": note}
     if body.get("attachment"):
         payload["attachment"] = body["attachment"]
-    return _queue_verdict(cfg, led, "uat_fail", body, payload, "fail")
+    return _queue_failure_report(cfg, led, body, payload)
 
 
 def attach(cfg, led, body):
