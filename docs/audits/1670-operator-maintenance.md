@@ -188,7 +188,15 @@ included in the final rerun recorded below. The HTTP tests bind ephemeral loopba
 in-memory state; this does not expose the production console. Existing Node
 browser lifecycle fixtures are exercised by the console suite, not a GUI run.
 
-Full verification results will be recorded below after completion.
+Final verification on the replayed branch (2026-11-22, Python 3.14.10):
+
+- Focused command above: 830 tests passed.
+- `python3 -m mahler.repo_guard`: passed (exit 0).
+- `python3 -m unittest discover -s tests`: 3,903 tests, passed (2 skipped).
+- `python3 tests/run_random.py`: 3,903 tests, passed (2 skipped; seed 276721196).
+- `python3 -X dev tests/run_strict.py`: 3,903 tests, passed (2 skipped).
+
+The replayed implementation required no further source changes.
 
 Remaining coverage: no live Tailnet proxy, notification delivery, remote release,
 production backup/restore, installed worker CLI, external dispatcher or daemon
