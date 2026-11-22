@@ -1262,6 +1262,47 @@ def close_finished_parents(ctx, projects):
             ctx.say(f"{p['name']}: close_finished_parents failed — {e}")
 
 
+def _prless_child_evidence(ctx, project, parent, child, issue):
+    """Accept explicit owner disposition or applied, merge-backed verification.
+
+    Issue author association is not closure attribution. Only the closing actor
+    and a nonempty owner comment establish an owner disposition.
+    """
+    gh, repo = ctx.gh(project), ctx.policy(project)["repo"]
+    owner = repo.split("/", 1)[0].casefold()
+    closer = issue.get("closed_by")
+    if closer is None:
+        closer = gh.issue_closed_by(child)
+    if isinstance(closer, dict) and str(closer.get("login", "")).casefold() == owner:
+        for comment in gh.issue_comments(child):
+            author = comment.get("author") or comment.get("user") or {}
+            if (str(author.get("login", "")).casefold() == owner
+                    or comment.get("authorAssociation") == "OWNER") and comment.get("body", "").strip():
+                return f"#{child}: closed by owner with comment"
+    for row in ctx.led.q("SELECT value FROM kv WHERE key LIKE ?",
+                         (f"parent_evidence:{project}#%",)):
+        record = json.loads(row["value"] or "{}")
+        # `done` is written only after the existing independent-review gate and
+        # evidence publication succeed. Raw comments cannot forge this provenance.
+        if record.get("parent") != parent or record.get("done") is not True:
+            continue
+        for entry in record.get("entries", []):
+            if entry.get("met") is not True or not re.search(
+                    rf"(?<![\w/])#{child}(?!\d)", entry.get("criterion", "")):
+                continue
+            text = entry.get("evidence", "")
+            prs = {int(n) for n in re.findall(
+                rf"https://github\.com/{re.escape(repo)}/pull/(\d+)\b", text)}
+            # Strip URLs before parsing local shorthand so another repository's
+            # PR cannot accidentally be interpreted as local evidence.
+            text = re.sub(r"https?://\S+", "", text)
+            prs.update(int(n) for n in re.findall(r"\bPR\s+#(\d+)\b", text, re.I))
+            if prs and all(pr_merged(gh.pr_merge_info(pr)) for pr in sorted(prs)):
+                return (f"#{child}: closed without a PR, verified by #{record['verify']} via merged "
+                        + ", ".join(f"PR #{pr}" for pr in sorted(prs)))
+    return None
+
+
 def _close_finished_parents_project(ctx, project):
     led, gh = ctx.led, ctx.gh(project)
     items = led.items(project)
@@ -1339,7 +1380,14 @@ def _close_finished_parents_project(ctx, project):
                     # never added to `completed`, so it cannot tick merge criteria.
                     evidence.append(f"#{child}: closed {reasons[child].replace('_', ' ')} without a PR")
                 else:
-                    blockers.append(f"#{child}: closed without confirmed merged PR evidence")
+                    accepted = None
+                    if reasons.get(child) == "completed":
+                        issue = next((it for it in inventory if it["number"] == child), {})
+                        accepted = _prless_child_evidence(ctx, project, n, child, issue)
+                    if accepted:
+                        evidence.append(accepted)
+                    else:
+                        blockers.append(f"#{child}: closed without confirmed merged PR evidence")
             lines = body.splitlines(keepends=True)
             ticked = set()
             for index, check, child in checks:
