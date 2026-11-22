@@ -1184,6 +1184,26 @@ class TestCommitPRLookup(unittest.TestCase):
             self.assertIsNone(gh.pr_for_commit("a" * 40))
 
 
+class PRMergeTests(unittest.TestCase):
+    def test_pr_merge_rejects_missing_or_invalid_head_sha(self):
+        from mahler.gh import GHError
+        gh = GH("test/repo")
+        for bad_head in ("", "not-a-sha", "--option", None, "a" * 39, "g" * 40):
+            with self.subTest(head=bad_head), patch.object(gh, "_gh") as mock_gh:
+                with self.assertRaisesRegex(GHError, "merge: missing or invalid PR head SHA"):
+                    gh.pr_merge(42, bad_head)
+                mock_gh.assert_not_called()
+
+    def test_pr_merge_invokes_gh_with_match_head_commit(self):
+        gh = GH("test/repo")
+        valid_head = "a" * 40
+        with patch.object(gh, "_gh") as mock_gh:
+            gh.pr_merge(42, valid_head)
+            mock_gh.assert_called_once_with(
+                "pr", "merge", "42", "-R", "test/repo", "--squash",
+                "--delete-branch", "--match-head-commit", valid_head)
+
+
 class RateLimitTests(unittest.TestCase):
     def test_header_reset_shared_across_repositories_and_new_contexts(self):
         from mahler.ledger import Ledger
