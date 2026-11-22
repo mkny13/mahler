@@ -2451,6 +2451,36 @@ class ResumeNudgeTests(unittest.TestCase):
                "started_at": iso(NOW), "stop_reason": None, "nudged": nudged}
         return run, run_id, log_path, status_path
 
+    def test_orphaned_cline_session_lookup_is_removed(self):
+        self.assertFalse(hasattr(finalize, "_cline_session_id"))
+
+    def test_cline_continuation_uses_resume_file_without_history(self):
+        run, run_id, log_path, status_path = self._make_run()
+        Path(status_path).write_text("0\n")
+        env = {"MAHLER_RUN_ID": str(run_id)}
+        argv = ["cline", "--json", "resume prompt"]
+        with mock.patch("subprocess.run") as command, \
+                mock.patch.object(finalize.platforms, "resume_argv_for", return_value=argv) as resume, \
+                mock.patch.object(runner, "run_env", return_value=env), \
+                mock.patch.object(runner, "spawn", return_value=777) as spawn:
+            self.assertTrue(finalize._try_cline_nudge(
+                self.ctx, run, "cline", {"ok": True, "session_id": "old-session"},
+                self.ctx.policy("x")))
+
+        command.assert_not_called()
+        resume_file = Path(self.runs_dir) / str(run_id) / "resume-1.md"
+        prompt_text = resume_file.read_text()
+        self.assertIn("Carry on with the next step", prompt_text)
+        resume.assert_called_once_with(
+            self.cfg["platforms"]["cline-free"], prompt_text, run["worktree"],
+            "build", 60, session_id=None)
+        spawn.assert_called_once_with(
+            argv, run["worktree"], log_path, status_path, env=env,
+            append=True, stdin_path=str(resume_file))
+        updated = self.led.run(run_id)
+        self.assertEqual((updated["nudged"], updated["status"], updated["pid"]),
+                         (1, "running", 777))
+
     def test_resume_env_includes_fence_epoch_and_gh_overlay(self):
         run, run_id, log_path, status_path = self._make_run("cline-free", nudged=0)
         with open(log_path, "w") as fh:
