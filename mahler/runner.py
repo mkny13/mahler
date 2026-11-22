@@ -184,9 +184,9 @@ def catch_up(wt, branch, base, number, run_id, env=None):
         git(wt, "push", "--quiet", "--no-verify", "--force", "origin",
             f"HEAD:refs/heads/{kept}", env=env)
         git(wt, "reset", "--quiet", "--hard", onto)
-    # The remote branch must not keep the stale history, or the agent's first push
-    # is rejected and a weak model "fixes" that by pulling it back in. But a branch
-    # sitting at base's tip reads as merged on an open PR, so drop it instead.
+    # The remote branch must not keep the stale history, or a subsequent push
+    # is rejected when updating the branch. But a branch sitting at base's tip
+    # reads as merged on an open PR, so drop it instead.
     if int(git(wt, "rev-list", "--count", f"{onto}..HEAD") or 0):
         git(wt, "push", "--quiet", "--no-verify", "--force", "origin",
             f"HEAD:refs/heads/{branch}", env=env)
