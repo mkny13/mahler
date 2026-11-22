@@ -322,6 +322,115 @@ class LedgerBackupTests(unittest.TestCase):
             self.assertEqual(fh.read(), original)
 
 
+class SQLiteCleanupTests(unittest.TestCase):
+    """Track real temporary SQLite handles, including exceptional exits."""
+
+    def setUp(self):
+        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.path = os.path.join(self.tmp, "source.db")
+        con = sqlite3.connect(self.path)
+        try:
+            con.execute("CREATE TABLE sample (value TEXT)")
+            con.execute("INSERT INTO sample VALUES ('preserved')")
+            con.commit()
+        finally:
+            con.close()
+        # Use a known mask distinct from backup_ledger's private-file mask.
+        # Cleanup also runs if an assertion or injected failure escapes.
+        self.addCleanup(os.umask, os.umask(0o027))
+
+    def _connection(self, connect, *args, **kwargs):
+        con = connect(*args, **kwargs)
+        self.addCleanup(con.close)  # safety net if a regression omits close()
+        return Mock(wraps=con, spec=sqlite3.Connection)
+
+    def test_integrity_check_closes_on_execute_or_fetch_failure(self):
+        connect = sqlite3.connect
+        for stage in ("execute", "fetchone"):
+            with self.subTest(stage=stage):
+                con = self._connection(connect, self.path)
+                error = sqlite3.OperationalError(f"integrity {stage} failed")
+                if stage == "execute":
+                    con.execute.side_effect = error
+                else:
+                    con.execute.return_value = Mock(spec=sqlite3.Cursor)
+                    con.execute.return_value.fetchone.side_effect = error
+                with patch("mahler.backup.sqlite3.connect", return_value=con), \
+                        self.assertRaises(sqlite3.OperationalError) as caught:
+                    backup.integrity_check(self.path)
+                self.assertIs(caught.exception, error)
+                con.execute.assert_called_once_with("PRAGMA integrity_check")
+                con.close.assert_called_once_with()
+
+    def _check_backup(self, stage=None):
+        connect = sqlite3.connect
+        roles = ("source", "destination", "integrity")
+        proxies = {role: Mock(spec=sqlite3.Connection) for role in roles}
+        acquired = []
+        error = sqlite3.OperationalError(f"{stage} failed")
+
+        def acquire(*args, **kwargs):
+            role = roles[len(acquired)]
+            if stage == f"{role}_connect":
+                raise error
+            proxy = self._connection(connect, *args, **kwargs)
+            proxies[role] = proxy
+            acquired.append(role)
+            if role == "source":
+                # sqlite3's C API requires the underlying destination handle.
+                proxy.backup.side_effect = lambda dst: proxy._mock_wraps.backup(dst._mock_wraps)
+                if stage == "backup":
+                    proxy.backup.side_effect = error
+            elif role == "destination" and stage == "pragma":
+                proxy.execute.side_effect = error
+            elif role == "integrity":
+                if stage == "integrity_execute":
+                    proxy.execute.side_effect = error
+                elif stage == "integrity_fetch":
+                    proxy.execute.return_value = Mock(spec=sqlite3.Cursor)
+                    proxy.execute.return_value.fetchone.side_effect = error
+            return proxy
+
+        with patch("mahler.backup.sqlite3.connect", side_effect=acquire) as factory:
+            if stage is None:
+                result = backup.backup_ledger(self.path, root=os.path.join(self.tmp, "backups"))
+            else:
+                with self.assertRaises(sqlite3.OperationalError) as caught:
+                    backup.backup_ledger(self.path, root=os.path.join(self.tmp, "backups"))
+                self.assertIs(caught.exception, error)
+
+        expected = {
+            "source_connect": [],
+            "destination_connect": ["source"],
+            "backup": ["source", "destination"],
+            "pragma": ["source", "destination"],
+        }.get(stage, list(roles))
+        self.assertEqual(acquired, expected)
+        self.assertEqual(factory.call_count, len(expected) + int(bool(stage and stage.endswith("_connect"))))
+        for role, proxy in proxies.items():
+            with self.subTest(role=role):
+                if role in expected:
+                    proxy.close.assert_called_once_with()
+                else:
+                    proxy.close.assert_not_called()
+        self.assertEqual(os.umask(0o027), 0o027, "backup must restore the prior umask")
+        if stage is None:
+            con = connect(result["path"])
+            try:
+                self.assertEqual(con.execute("SELECT value FROM sample").fetchone(), ("preserved",))
+            finally:
+                con.close()
+
+    def test_backup_closes_connections_on_failure_and_restores_umask(self):
+        for stage in ("source_connect", "destination_connect", "backup", "pragma",
+                      "integrity_execute", "integrity_fetch"):
+            with self.subTest(stage=stage):
+                self._check_backup(stage)
+
+    def test_successful_backup_closes_all_connections_and_restores_umask(self):
+        self._check_backup()
+
+
 class RunLedgerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
