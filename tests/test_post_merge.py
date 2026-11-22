@@ -1372,5 +1372,71 @@ class PostMergeTests(unittest.TestCase):
             self.assertNotIn(secret, events[0]["detail"])
 
 
+class NamedFailureReleaseTests(unittest.TestCase):
+    setUp = PostMergeTests.setUp
+    register = PostMergeTests.register
+    tick = PostMergeTests.tick
+    row = PostMergeTests.row
+    phase = PostMergeTests.phase
+    wait_result = PostMergeTests.wait_result
+    through_live = PostMergeTests.through_live
+
+    def prepare(self):
+        self.cfg["projects"]["mahler"] = self.cfg["projects"].pop("p")
+        self.cfg["projects"]["mahler"]["repo"] = "owner/mahler"
+        self.cfg["projects"]["app"] = {"enabled": True, "repo": "owner/app"}
+        self.projects = [{"name": "mahler"}]
+        self.led.upsert_item("mahler", 1, state="shipped", title="Fix app#8",
+                             issue_body="Failures app#5 app#7 app#9 app#10 app#11 app#5")
+        self.led.add_uat("mahler", 1, 4, SHA, "fix", "verify", shipped_at=iso(NOW))
+        post_merge.register(self.ctx, "mahler", 1,
+                            {"state": "MERGED", "mergeCommit": {"oid": SHA}})
+        for n, state in ((5, "failed"), (6, "failed"), (7, "parked"),
+                         (8, "needs_you"), (9, "ready"), (10, "done"), (11, "shipped")):
+            self.led.upsert_item("app", n, state=state, attempts=3)
+        self.app_gh = mock.Mock()
+        self.app_gh.issue_comments.return_value = []
+        self.ctx.gh.side_effect = lambda name: self.app_gh if name == "app" else self.gh
+
+    def test_live_pass_releases_only_named_failures_once(self):
+        self.prepare()
+        with mock.patch.object(post_merge, "_advance"):
+            self.tick()
+        self.assertEqual(self.led.item("app", 5)["state"], "failed")
+        self.app_gh.comment_create.assert_not_called()
+        report = self.root / "report.md"
+        report.write_text(f"Tag: {SHA}\nSmoke: PASS\n")
+        self.led.update_post_merge_check("mahler", 1, SHA, expected_phase="deploy", phase="live")
+        self.led.update_post_merge_check("mahler", 1, SHA, expected_phase="live", phase="smoke", live_sha=SHA)
+        self.led.update_post_merge_check("mahler", 1, SHA, expected_phase="smoke",
+            phase="smoke", status="PASS", evidence_ref=str(report))
+        self.tick()
+        for n, state in ((5, "ready"), (6, "failed"), (7, "parked"),
+                         (8, "ready"), (9, "ready"), (10, "done"), (11, "shipped")):
+            self.assertEqual(self.led.item("app", n)["state"], state)
+            self.assertEqual(self.led.item("app", n)["attempts"], 0 if n in (5, 8) else 3)
+        self.assertEqual(self.app_gh.comment_create.call_count, 2)
+        for call in self.app_gh.comment_create.call_args_list:
+            self.assertTrue(call.args[1].startswith("<!-- mahler:agent -->"))
+            self.assertIn("https://github.com/owner/mahler/issues/1", call.args[1])
+        events = self.led.q("SELECT * FROM events WHERE kind='named_failures_released'")
+        self.assertTrue(events)
+        self.led.upsert_item("app", 5, state="failed")
+        self.tick()
+        self.assertEqual(self.led.item("app", 5)["state"], "failed")
+        self.assertEqual(self.app_gh.comment_create.call_count, 2)
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='named_failures_released'")), len(events))
+
+    def test_reference_resolution(self):
+        from mahler.gh import referenced_items
+        projects = [{"name": name, "repo": repo, "enabled": enabled} for name, repo, enabled in
+                    (("mahler", "owner/mahler", True), ("app", "owner/app", True),
+                     ("other", "other/app", True), ("off", "owner/off", False))]
+        self.assertEqual(referenced_items(
+            "app#5 owner/app#5 OWNER/APP#5 other/app#6 off#2 mahler#1 "
+            "unknown#3 prefix/owner/app#7 owner/app#8suffix", "mahler", projects),
+            [("app", 5), ("other", 6)])
+
+
 if __name__ == "__main__":
     unittest.main()
