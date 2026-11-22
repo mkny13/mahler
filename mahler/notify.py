@@ -29,6 +29,10 @@ def send(cfg, title, message="", click=None, priority="default", tags=""):
     one boundary where text leaves the machine (issue #76)."""
     from . import redact
     title, message = redact.redact(title), redact.redact(message)
+    # A credential-bearing destination must not leave in an HTTP header.
+    # Drop it rather than sending a redacted URL that no longer works.
+    if click and redact.redact(click) != click:
+        click = None
     ntfy = cfg.get("ntfy", {})
     topic = ntfy.get("topic")
     topic_high = ntfy.get("topic_high")
