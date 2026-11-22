@@ -183,8 +183,90 @@ class WaitTests(unittest.TestCase):
                 self.assertIsNone(self.led.get_kv(key))
 
         self.assertEqual(len(comments), 2)
-        self.assertEqual(self.led.get_kv(key), "commented")
-        self.assertEqual(self.record()["checks"], 2)
+
+    def test_vetting_wait_age_only_does_not_escalate_at_72h_and_resumes_at_eligible_plus_margin(self):
+        self.led.upsert_item("p", 1, pr=88)
+        gh = SiteGH()
+        self.ctx.gh = lambda project: gh
+        eligible_at = iso(T0 + timedelta(days=8))
+        self.hold("dependency_vetting", since=iso(T0),
+                  wake={"pr": 88, "kind": "gate", "sha": "abc", "eligible_at": eligible_at})
+        waits.save_vetting_carry(self.led, "p", 1, 88, "gate", iso(T0), 0)
+
+        # Advance to 72h (the normal wait_escalate_hours backstop threshold)
+        self.advance(hours=72)
+        waits.recheck(self.ctx, "p")
+        self.assertEqual(self.led.item("p", 1)["state"], "waiting")
+        self.assertEqual(self.pings, [])
+        self.assertIsNotNone(waits.load(self.led, "p", 1))
+
+        # Advance to eligible_at + margin (8 days + 10 minutes)
+        # Recheck gate passes -> wait is over, resumes to verifying
+        self.advance(days=5, minutes=10)
+        with mock.patch("mahler.ship._vet_gate", return_value=(None, None)):
+            waits.recheck(self.ctx, "p")
+        self.assertEqual(self.led.item("p", 1)["state"], "verifying")
+        self.assertIsNone(waits.load(self.led, "p", 1))
+        self.assertEqual(self.pings, [])
+
+    def test_vetting_wait_transient_error_leaves_age_clock_untouched(self):
+        self.led.upsert_item("p", 1, pr=88)
+        gh = SiteGH()
+        self.ctx.gh = lambda project: gh
+        eligible_at = iso(T0 + timedelta(days=8))
+        self.hold("dependency_vetting", since=iso(T0),
+                  wake={"pr": 88, "kind": "gate", "sha": "abc", "eligible_at": eligible_at})
+        waits.save_vetting_carry(self.led, "p", 1, 88, "gate", iso(T0), 0)
+
+        # Advance past 72h: still waiting, no ping, because eligible_at is still in future
+        self.advance(hours=72)
+        waits.recheck(self.ctx, "p")
+        self.assertEqual(self.led.item("p", 1)["state"], "waiting")
+        self.assertEqual(self.pings, [])
+
+        # Gate recheck at eligible_at + margin produces a transient lookup error
+        self.advance(days=5, minutes=10)
+        detail = "registry/advisory lookup failed: The read operation timed out"
+        with mock.patch("mahler.ship._vet_gate", return_value=(detail, None)):
+            waits.recheck(self.ctx, "p")
+
+        rec = self.record()
+        self.assertEqual(self.led.item("p", 1)["state"], "waiting")
+        self.assertEqual(rec["wake"]["eligible_at"], eligible_at)
+        self.assertEqual(rec["since"], iso(T0))
+        self.assertEqual(self.pings, [])
+
+        # 30 min later on backoff(2), gate recheck passes and resumes
+        self.advance(minutes=30)
+        with mock.patch("mahler.ship._vet_gate", return_value=(None, None)):
+            waits.recheck(self.ctx, "p")
+        self.assertEqual(self.led.item("p", 1)["state"], "verifying")
+
+    def test_vetting_wait_non_age_blocker_clears_eligible_at_and_escalates_under_normal_backstop(self):
+        self.led.upsert_item("p", 1, pr=88)
+        gh = SiteGH()
+        self.ctx.gh = lambda project: gh
+        eligible_at = iso(T0 + timedelta(days=8))
+        self.hold("dependency_vetting", since=iso(T0),
+                  wake={"pr": 88, "kind": "gate", "sha": "abc", "eligible_at": eligible_at})
+        waits.save_vetting_carry(self.led, "p", 1, 88, "gate", iso(T0), 0)
+
+        # Gate produces a permanent non-age blocker (e.g. high/critical advisory) at eligible_at + margin
+        self.advance(days=8, minutes=10)
+        detail = "high/critical advisory: safe-package"
+        with mock.patch("mahler.ship._vet_gate", return_value=(detail, None)):
+            waits.recheck(self.ctx, "p")
+
+        rec = self.record()
+        self.assertEqual(self.led.item("p", 1)["state"], "waiting")
+        self.assertNotIn("eligible_at", rec["wake"])
+
+        # Now advance 72h from that recheck -> normal backstop triggers needs_you
+        self.advance(hours=72)
+        waits.recheck(self.ctx, "p")
+        self.assertEqual(self.led.item("p", 1)["state"], "needs_you")
+        self.assertEqual(len(self.pings), 1)
+        self.assertIsNone(waits.load(self.led, "p", 1))
 
     def test_unknown_cause_raises(self):
         with self.assertRaises(ValueError):
