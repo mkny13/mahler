@@ -122,6 +122,23 @@ class PrimaryCheckoutTests(Base):
         self.assertEqual(events[0]["detail"],
                          '{"from": "' + old + '", "to": "' + new + '"}')
 
+    def test_live_project_lease_prevents_primary_update(self):
+        old, _ = self.advance_remote()
+        for kind in ("interactive", "agent", "conductor"):
+            with self.subTest(kind=kind):
+                self.led.claim("t", 1, kind, kind, 30)
+                janitor.sweep(self.ctx, self.ctx.policy("t"))
+                self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD"), old)
+                self.led.release("t", 1)
+        self.assertFalse(self.led.q("SELECT * FROM events WHERE kind='primary_ff'"))
+
+    def test_expired_or_other_project_lease_does_not_prevent_update(self):
+        _, new = self.advance_remote()
+        self.led.claim("t", 1, "old", "interactive", -1)
+        self.led.claim("other", 1, "busy", "interactive", 30)
+        janitor.sweep(self.ctx, self.ctx.policy("t"))
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD"), new)
+
     def test_tracked_change_is_untouched(self):
         old, new = self.advance_remote()
         write(os.path.join(self.repo, "a.txt"), "local\n")
