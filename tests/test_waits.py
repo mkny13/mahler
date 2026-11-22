@@ -181,8 +181,11 @@ class WaitTests(unittest.TestCase):
             self.assertIn("pnpm-lock.yaml", waits._last_state_reason(self.led, "p", 1))
             if len(comments) == 1:
                 self.assertIsNone(self.led.get_kv(key))
+            else:
+                self.assertEqual(self.led.get_kv(key), "commented")
 
         self.assertEqual(len(comments), 2)
+        self.assertEqual(waits.vetting_carry(self.led, "p", 1, 88, "gate")[1], 2)
 
     def test_vetting_wait_age_only_does_not_escalate_at_72h_and_resumes_at_eligible_plus_margin(self):
         self.led.upsert_item("p", 1, pr=88)
