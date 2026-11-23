@@ -53,7 +53,8 @@ class RunEnvTests(unittest.TestCase):
                 mock.patch.object(runner, "fence_hooks", return_value="/runs/42/hooks"), \
                 mock.patch.object(config, "project_github_app",
                                   return_value=app_mock if app else None), \
-                mock.patch.dict(os.environ, ambient or {"PATH": os.environ.get("PATH", "")},
+                mock.patch.dict(os.environ, ambient or {
+                    "PATH": os.environ.get("PATH", ""), "HOME": d},
                                 clear=True):
             return runner.run_env(app_ctx(d, platform_conf), "mahler", 1123, platform, 42, 7)
 
@@ -65,7 +66,7 @@ class RunEnvTests(unittest.TestCase):
             # its own COPILOT_HOME — never the App token.
             for var in ("GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"):
                 self.assertNotIn(var, env)
-            self.assertEqual(env["COPILOT_HOME"], os.path.expanduser("~/.copilot-work"))
+            self.assertEqual(env["COPILOT_HOME"], os.path.join(d, ".copilot-work"))
             self.assertNotIn("ghs_scoped_agent_token_1211", env.values())
             # gh gets an empty private config dir: Copilot's fallback to `gh`
             # must not find the App token either (#1506).
