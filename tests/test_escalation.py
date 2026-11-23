@@ -61,6 +61,9 @@ class StubCtx:
     def say(self, msg):
         self.lines.append(msg)
 
+    def hold(self, *args, **kw):
+        pass
+
     def ping(self, title, message="", project=None, number=None,
              priority="default", tags=""):
         self.pings.append((title, message, priority))
@@ -81,6 +84,7 @@ class TierEscalationTests(unittest.TestCase):
         self.addCleanup(self.led.close)
 
         cfg = copy.deepcopy(config.DEFAULTS)
+        cfg["claude_peak"]["enabled"] = False
         self.ctx = StubCtx(cfg, self.led)
 
     def tearDown(self):
