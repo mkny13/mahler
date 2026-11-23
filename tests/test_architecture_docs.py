@@ -44,7 +44,7 @@ class ArchitectureDocsTests(unittest.TestCase):
     def test_repository_relative_links_resolve(self):
         for name in DOCUMENTS:
             paths = list(local_links((ROOT / name).read_text()))
-            self.assertTrue(paths, name)
+            self.assertTrue(paths, f'{name}: expected repository-relative links')
             for path in paths:
                 with self.subTest(document=name, path=path):
                     self.assertTrue((ROOT / path).exists(), f'{name}: broken link {path}')
