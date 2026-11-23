@@ -39,7 +39,8 @@ class TimingTests(unittest.TestCase):
     def test_result_measures_test_lifecycle_with_synthetic_clock(self):
         case = unittest.FunctionTestCase(lambda: None)
         result = run_timing.TimingResult(io.StringIO(), True, 0)
-        with patch.object(run_timing.time, 'perf_counter', side_effect=[10, 12.5]):
+        with patch.object(run_timing, 'time') as clock:
+            clock.perf_counter.side_effect = [10, 12.5]
             case.run(result)
         self.assertEqual(result.samples, [(case.id(), 2.5)])
         self.assertTrue(result.wasSuccessful())
