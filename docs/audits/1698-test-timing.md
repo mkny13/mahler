@@ -102,3 +102,17 @@ Top 20 IDs by median per-test duration (seconds):
 
 These are the complete candidate list for this bounded audit. Their repeated
 costs appear in the table above; no candidate was optimized in this issue.
+
+## Required repository verification
+
+All commands ran sequentially on the baseline code; the later documentation-only
+commit does not change the tests. Wall time includes interpreter startup and discovery.
+
+| Command | Tests | unittest seconds | Process wall seconds | Outcome |
+| --- | ---: | ---: | ---: | --- |
+| `python3 -m mahler.repo_guard` | n/a | n/a | 0.039622 | PASS, exit 0 |
+| `python3 -m unittest discover -s tests` | 3917 | 311.303 | 311.582060 | PASS, exit 0, 2 skipped |
+| `python3 tests/run_random.py` | 3917 | 321.297 | 322.002830 | PASS, exit 0, 2 skipped |
+
+Randomized seed: **2112414675**; reproduce with
+`python3 tests/run_random.py 2112414675`.
