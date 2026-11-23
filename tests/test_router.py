@@ -212,3 +212,51 @@ class AccountBoundaryAndFailClosedTests(unittest.TestCase):
             self.assertTrue(any('claude-low: only takes size:s' in r for r in reasons))
 
 
+
+
+class ArgonWeeklyPoolTests(unittest.TestCase):
+    """mahler#1706: the Gemini 4 Argon pool reports only a weekly bucket."""
+
+    USAGE = {"command": {"data": {"groups": [
+        {"name": "Gemini Models", "buckets": [
+            {"window": "5h", "remaining_fraction": 0.93, "reset_time": "2026-11-23T15:01:41Z"},
+            {"window": "weekly", "remaining_fraction": 0.66, "reset_time": "2026-11-28T09:11:25Z"}]},
+        {"name": "Gemini 4 Argon", "buckets": [
+            {"id": "gemini-argon-wtu-weekly", "name": "Gemini 4 Argon Weekly Limit",
+             "window": "weekly", "remaining_fraction": 1,
+             "reset_time": "2026-11-30T14:22:43Z"}]},
+    ]}}}
+
+    def setUp(self):
+        self.now = datetime(2026, 11, 23, 14, 30, tzinfo=timezone.utc)
+        self.cfg = config.resolve_platforms(copy.deepcopy(config.DEFAULTS))
+        self.led = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+
+    def record(self, pools):
+        for name, pconf in self.cfg['platforms'].items():
+            for window, pct, resets in pools.get(pconf.get('pool'), []):
+                self.led.record_usage(name, window, pct, resets)
+
+    def test_weekly_only_reading_is_headroom_not_stale(self):
+        pools = platforms.parse_agy_usage(self.USAGE)
+        self.assertEqual(pools['Gemini 4 Argon'],
+                         [('weekly', 0.0, '2026-11-30T14:22:43Z')])
+        self.record(pools)
+        for name in ('agy-argon', 'agy-argon/gemini-4-argon-high/default'):
+            with self.subTest(platform=name):
+                state, detail = router.usage_state(
+                    self.led, name, self.cfg['platforms'][name])
+                self.assertEqual(state, 'ok', detail)
+                self.assertNotIn('5h', detail)
+
+    def test_weekly_lines_still_apply(self):
+        self.led.record_usage('agy-argon', 'weekly', 95, '2026-11-30T14:22:43Z')
+        state, _ = router.usage_state(self.led, 'agy-argon',
+                                      self.cfg['platforms']['agy-argon'])
+        self.assertEqual(state, 'hard')
+
+    def test_no_reading_is_stale(self):
+        state, _ = router.usage_state(self.led, 'agy-argon',
+                                      self.cfg['platforms']['agy-argon'])
+        self.assertEqual(state, 'stale')

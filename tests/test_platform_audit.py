@@ -28,6 +28,11 @@ def setUpModule():
     patcher = mock.patch.object(cline_free, "fetch_free_models", return_value=None)
     patcher.start()
     unittest.addModuleCleanup(patcher.stop)
+    # Hermetic: the agy catalog check is on by default (mahler#1706), so no
+    # test may reach a real `agy models` on a machine that has agy installed.
+    agy = mock.patch.object(platform_audit.platforms, "agy_exe", return_value=None)
+    agy.start()
+    unittest.addModuleCleanup(agy.stop)
 
 
 class QueueTests(unittest.TestCase):
@@ -706,13 +711,31 @@ class ModelCandidatesTests(unittest.TestCase):
         self.assertIn("`claude-sonnet-4`", body)
         self.assertIn("Models seen in runs that no slot or variant pins", body)
 
-    def test_cli_models_off_by_default(self):
+    def test_cli_models_on_by_default_and_can_be_turned_off(self):
+        # mahler#1706: `agy models` costs no quota, so the check runs by default.
         cfg = self._cfg()
-        calls = []
         pol = config.platform_audit_policy(cfg)
-        self.assertEqual(platform_audit.agy_catalog(pol, run=calls.append)["status"], "off")
-        self.assertIsNone(platform_audit._optional_cli_models(cfg, pol))
+        self.assertTrue(pol["model_list_cli"])
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            return _proc(AGY_CATALOG)
+        catalog = platform_audit.agy_catalog(pol, run=run, exe="/bin/agy")
+        self.assertEqual(catalog["status"], "ok")
+        self.assertEqual(calls, [["/bin/agy", "models"]])
+        calls.clear()
+        off = dict(pol, model_list_cli=False)
+        self.assertEqual(platform_audit.agy_catalog(off, run=run, exe="/bin/agy")["status"], "off")
+        self.assertIsNone(platform_audit._optional_cli_models(cfg, off))
         self.assertEqual(calls, [])
+
+    def test_retired_agy_pin_is_reported_missing(self):
+        cfg = self._cfg(**{"agy-old": {"kind": "agy", "model": "gemini-3.1-pro-high"}})
+        catalog = {"status": "ok", "models": {"gemini-3.8-flash-high"},
+                   "context": config.DEFAULT_ACCOUNT, "detail": "ok"}
+        missing, _ = platform_audit.missing_pins(cfg, catalog)
+        self.assertIn("agy-old", [name for name, _, _ in missing])
 
 
 AGY_CATALOG = (
