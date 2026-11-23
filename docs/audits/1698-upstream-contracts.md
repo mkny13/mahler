@@ -143,4 +143,10 @@ and randomized suites overlapped, so these are not isolated performance benchmar
 | `python3 -m mahler.repo_guard` | exit 0, 0.04 s wall time (no test count) |
 | `python3 -m unittest discover -s tests` | 3926 tests, OK, 2 skipped, 358.270 s |
 | `python3 tests/run_random.py` | 3926 tests, OK, 2 skipped, 363.962 s (364.75 s wall time) |
-| `python3 -X dev tests/run_strict.py` | Running; result pending |
+| `python3 -X dev tests/run_strict.py` | 3926 tests, OK, 2 skipped, 355.338 s (355.73 s wall time) |
+
+All commands above exited 0. No test failures were reported. The ordinary suite
+emitted an SQLite datetime-adapter DeprecationWarning; the strict runner passed.
+No protected live verification was performed, and no manual checks remain for this
+audit deliverable. Recorded captures and scheduled contract assertions remain
+recommendations, not completed coverage.
