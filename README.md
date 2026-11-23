@@ -6,7 +6,8 @@ an isolated git worktree, preserves handoffs, and lets a deterministic conductor
 open, verify, and merge the resulting pull request.
 
 Supported runners currently include Claude Code, Antigravity (`agy`), Cline,
-GitHub Copilot CLI, Codex CLI, Kilo, and (opt-in) Kiro CLI and Mistral Vibe CLI. A project chooses which authenticated
+GitHub Copilot CLI, Codex CLI, Kilo, and opt-in Kiro CLI, Mistral Vibe CLI,
+Jetstream through Cline, and the separately installed Agent SDK runner (D41). A project chooses which authenticated
 accounts and runners it may spend; unavailable CLIs are skipped.
 
 Mahler is currently a macOS, single-operator service. Its control plane uses
@@ -20,14 +21,19 @@ separate optional console process.
   handling, platform pins, and comment commands.
 - Quota-aware routing, multi-account isolation, leases, pre-emption, worktree
   isolation, snapshots, retries, and cross-platform handoffs.
-- Conductor-owned PR creation, CI watching, merge confirmation, and revert PRs.
+- Conductor-owned pushes, PR creation, CI watching, independent head-bound review,
+  merge confirmation, post-merge checks, and revert PRs.
 - A phone and desktop console for status, backlog, capture, needs-you answers,
   live logs, stop-and-handoff, quota controls, merge reverts, What changed, and optional failure reports.
   Shipments complete on automated evidence or after 14 quiet days; adverse evidence
   within that window reopens early automated completions and creates fix work.
 - Phone notifications via ntfy for questions, handoffs, shipped work, and
   quota exhaustion alerts.
-- A small local MCP server for queue and lease operations.
+- A small local MCP server for queue and lease operations, plus operator-started
+  discussions with a separate, restricted issue-only tool surface.
+- External waits and typed holds, timed project priority, account-scoped GitHub identity,
+  screenshot evidence delivery, scanned lessons/history, Atlas inventory, and measured
+  scorecard/capacity reports. The API-credit gateway spends only confirmed grants.
 - Scheduled backups, digests, cleanup, calibration, and recurring maintenance
   reviews.
 
@@ -40,10 +46,15 @@ treating a design statement as shipped behavior.
 
 - macOS with `launchd`
 - Python 3.14 or newer
-- `git` and an authenticated [GitHub CLI](https://cli.github.com/)
+- `git` and [GitHub CLI](https://cli.github.com/) with a configured project identity
+  (account-scoped CLI credentials, GitHub App or fine-grained PAT; DESIGN D25/D47)
 - a GitHub repository for every managed project
 - at least one supported agent CLI, installed and authenticated
 - optional: ntfy for notifications and Tailscale for private phone access
+
+The optional `sdk_runner/` package has separate installation/dependency requirements;
+the conductor and console remain standard library only. Work Claude accounts require
+their own `CLAUDE_CONFIG_DIR`; work GitHub identity must be explicitly scoped.
 
 Mahler runs agent CLIs unattended in isolated worktrees. Read
 [DESIGN.md](DESIGN.md), especially D6, D8, D12, D18, and D25, before enabling it
@@ -205,6 +216,9 @@ mahler resume
 mahler unhold cline-free --dry-run          # inspect an explicit platform hold
 mahler unhold cline-free                    # clear it after fixing the cause
 mahler version
+mahler prioritize myapp 1h                # temporary scheduling priority
+mahler history myapp "quota" --limit 5    # project-scoped retained run evidence
+mahler capacity --days 14                 # observed historical capacity
 mahler release myapp                      # preview rolling draft release
 mahler release myapp --version X.Y.Z --publish  # publish git tag and GitHub release
 ```
@@ -249,10 +263,12 @@ launches only when `ioreg -c IOHIDSystem` reports `HIDIdleTime` of at least `gui
 requires the local time to be inside `gui_window` (default `00:00-06:00`; `""` disables).
 Both settings live under `[defaults]` with `[projects.<name>]` overrides; the project comes
 from `--project`, then `MAHLER_PROJECT`, then the global defaults (an unknown project fails).
-Exit codes: 0 permitted, 75 deferred (one-line reason on stderr, nothing launched), 2 invalid
-invocation or config; a launched command's own status passes through. The check happens once
-at launch only; the gate neither interrupts a running test nor unlocks the screen. Detached
-GUI jobs are unsupported.
+The gate also requires a usable console session. It may wake a sleeping display only
+when no password is required, then rechecks; it never types a password (D50).
+Exit codes: 0 permitted, 75 deferred with `mahler desktop: GATE-DENIED` (nothing launched),
+2 invalid invocation/config. A launched command's status passes through: its own exit 75
+is an ordinary failure, not deferral. The gate does not interrupt a running test.
+Detached GUI jobs are unsupported; a denied check is outstanding coverage, never a pass.
 
 ## Operator console
 
@@ -272,10 +288,16 @@ port = 8787
 ```
 
 The console's write endpoints accept only loopback or Tailscale source
-addresses, JSON with `X-Mahler-Console: 1`, and a same-origin request. Read
-endpoints do not authenticate. They can expose issue titles, events,
+addresses and JSON with `X-Mahler-Console: 1`. A supplied foreign Origin is
+rejected; missing Origin is accepted for non-browser callers. Ordinary read
+endpoints do not authenticate; `/api/chat` uses the request guard. They can expose issue titles, events,
 attachments, and live agent logs. Keep the default loopback binding unless the
 network is trusted; do not expose `mahler serve` directly to the public internet.
+
+Local settings changes apply directly. GitHub/process actions go through the tick's
+outbox; answers have a 60-second Undo grace. Operator-started discussion workers are
+D43's narrow exception: they can read bounded project evidence and mutate issues,
+with no build, lease or merge tools. The HTTP server and tick make no model calls.
 
 For private phone access, proxy the loopback listener through your tailnet:
 
@@ -322,17 +344,22 @@ Cline configuration:
 }
 ```
 
-The MCP server is intentionally minimal and local. Planned tools such as
+The MCP server is a privileged local operator interface, not a multi-user API.
+Discussions use a separate allowlisted MCP entry point with no fallback to these tools. Planned tools such as
 `ask_user`, `report_progress`, and `get_context` are not implemented yet.
 
 ## Develop and verify
 
 ```bash
+python3 -m mahler.repo_guard
 python3 -m unittest discover -s tests
 python3 tests/run_random.py
+python3 -X dev tests/run_strict.py
 ```
 
-Python 3.14+ and the standard library are the supported runtime. Tests must not
+CI runs all four commands: tracked-state guard, unit tests, order isolation and
+strict resource-leak checks. Python 3.14+ and the standard library are the supported
+control-plane runtime. Tests must not
 touch live `~/.mahler` state. Contributor and agent rules live in
 [AGENTS.md](AGENTS.md); the system map in [ARCHITECTURE.md](ARCHITECTURE.md); design
 decisions in [DESIGN.md](DESIGN.md); current and planned work in
