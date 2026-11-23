@@ -113,6 +113,22 @@ commit does not change the tests. Wall time includes interpreter startup and dis
 | `python3 -m mahler.repo_guard` | n/a | n/a | 0.039622 | PASS, exit 0 |
 | `python3 -m unittest discover -s tests` | 3917 | 311.303 | 311.582060 | PASS, exit 0, 2 skipped |
 | `python3 tests/run_random.py` | 3917 | 321.297 | 322.002830 | PASS, exit 0, 2 skipped |
+| `python3 -X dev tests/run_strict.py` | 3917 | 330.488 | 330.787375 | PASS, exit 0, 2 skipped |
 
 Randomized seed: **2112414675**; reproduce with
 `python3 tests/run_random.py 2112414675`.
+
+No full-suite run failed. Strict mode exited successfully after its final garbage
+collection and unraisable-exception check. Expected error-path fixture diagnostics
+appeared in logs and did not constitute test failures.
+
+The two skips are the opt-in `JourneyBrowserTests.test_journey_passes` and
+`ScreenshotBrowserSmokeTests.test_real_browser_capture_and_protection_rejection`:
+`MAHLER_CONSOLE_JOURNEY_CHROME` and `MAHLER_SCREENSHOT_SMOKE_CWD` were not enabled.
+Their real-browser journeys remain unverified here; they are not required to
+exercise this timing-only change. No human check is required for this issue.
+
+JSON artifacts were generated and parsed for all three measurements; this report
+retains their runtime metadata, totals and top-20 evidence. Full local artifacts
+and noisy fixture logs were scratch outputs, not committed historical CI data.
+Generate a fresh JSON baseline with the command above for future comparisons.
