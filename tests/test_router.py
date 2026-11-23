@@ -148,6 +148,17 @@ class FailedSortRoutingTests(unittest.TestCase):
 
 
 class AccountBoundaryAndFailClosedTests(unittest.TestCase):
+    """Protective guards for pre-existing account-boundary behavior.
+
+    These four tests pass against the pre-D25 base
+    c01dee624dd8e33983cc1397d8ca358bc2b95b74 by design; they do not by
+    themselves detect the D25 credential fail-closed fix. The fix-detecting
+    credential regression tests are ConfigTests.test_work_github_identity_requires_account_scoped_auth,
+    ConfigTests.test_work_claude_account_requires_its_own_config_dir, and
+    SlotAndUsageTests.test_work_claude_without_config_dir_is_never_probed in
+    tests/test_accounts.py; those fail on c01dee6 and pass on HEAD.
+    """
+
     def setUp(self):
         self.now = datetime(2026, 9, 12, 12, tzinfo=timezone.utc)
         self.cfg = copy.deepcopy(config.DEFAULTS)
@@ -158,6 +169,7 @@ class AccountBoundaryAndFailClosedTests(unittest.TestCase):
         self.led = Ledger(':memory:', clock=lambda: self.now)
         self.addCleanup(self.led.close)
 
+    # Guards pre-existing refusal of pins that cross account boundaries.
     def test_cross_account_pin_refused_with_reason(self):
         pol = {'name': 'p1', 'account': 'personal'}
         with mock.patch.object(platforms, 'available', return_value=True):
@@ -167,6 +179,7 @@ class AccountBoundaryAndFailClosedTests(unittest.TestCase):
             self.assertIsNone(chosen)
             self.assertTrue(any('spends the work account, not personal' in r for r in reasons))
 
+    # Guards pre-existing filtering of undeclared accounts in priority mode.
     def test_priority_mode_refuses_undeclared_account_platforms(self):
         cands = router.candidates_for_priority(
             self.cfg, 'build', ['personal'],
@@ -175,6 +188,7 @@ class AccountBoundaryAndFailClosedTests(unittest.TestCase):
         self.assertNotIn('work-claude', cands)
         self.assertIn('agy-claude', cands)
 
+    # Guards pre-existing fail-closed behavior for stale quota samples.
     def test_fail_closed_on_stale_quota_sample(self):
         pol = {'name': 'p1', 'account': 'personal'}
         self.led.record_usage('claude', '5h', 10, iso(self.now - timedelta(hours=1)))
@@ -182,6 +196,7 @@ class AccountBoundaryAndFailClosedTests(unittest.TestCase):
         self.assertIsNone(chosen)
         self.assertTrue(any('stale' in r for r in reasons))
 
+    # Guards pre-existing max-size bounds for unpinned candidates.
     def test_max_size_refuses_oversized_candidate_without_pin(self):
         pol = {'name': 'p1', 'account': 'personal'}
         self.cfg['routing']['build'] = ['claude-low']
@@ -195,6 +210,5 @@ class AccountBoundaryAndFailClosedTests(unittest.TestCase):
             # Without pin, size:m is refused on claude-low (max_size: s)
             chosen, reasons = router.pick_for_project(self.cfg, self.led, pol, 'build', size='m')
             self.assertTrue(any('claude-low: only takes size:s' in r for r in reasons))
-
 
 
