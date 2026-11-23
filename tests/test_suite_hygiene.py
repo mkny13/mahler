@@ -62,9 +62,11 @@ def problems(source, filename):
                     if not (isinstance(message, ast.JoinedStr)
                             or isinstance(message, ast.Constant) and isinstance(message.value, str)):
                         findings.append((node.lineno, function.name, 'assertTrue second argument is not a message literal'))
-            elif (isinstance(node, ast.Attribute) and node.attr.startswith('assert_')
-                  and id(node) not in called):
-                findings.append((node.lineno, function.name, 'mock assertion referenced without calling it'))
+            elif isinstance(node, ast.Attribute) and id(node) not in called:
+                if node.attr.startswith('assert_'):
+                    findings.append((node.lineno, function.name, 'mock assertion referenced without calling it'))
+                elif node.attr.startswith(('called_', 'not_called', 'has_calls', 'any_call')):
+                    findings.append((node.lineno, function.name, 'mock assertion missing assert_ prefix'))
         if not has_assertion and f'{filename}::{function.name}' not in ALLOWED:
             findings.append((function.lineno, function.name, 'no assertion'))
     return [f'{filename}:{line} {name}: {reason}' for line, name, reason in findings]
@@ -87,9 +89,14 @@ class SuiteHygieneTests(unittest.TestCase):
         samples = [
             ('pass', 'no assertion'),
             ('def hidden():\n        assert False', 'no assertion'),
+            ('async def hidden():\n        assert False', 'no assertion'),
             ('mock.called_once_with(1)', 'mock assertion missing assert_ prefix'),
+            ('mock.called_once_with', 'mock assertion missing assert_ prefix'),
+            ('mock.not_called()', 'mock assertion missing assert_ prefix'),
             ('mock.assert_called_once_with', 'mock assertion referenced without calling it'),
+            ('mock.assert_not_called', 'mock assertion referenced without calling it'),
             ('self.assertTrue(actual, expected)', 'assertTrue second argument is not a message literal'),
+            ('self.assertTrue(actual, 1)', 'assertTrue second argument is not a message literal'),
         ]
         for body, expected_problem in samples:
             with self.subTest(body=body):
