@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run tests with resource leaks and unraisable exceptions as failures.
 
-Usage: python3 -X dev tests/run_strict.py
+Usage: python3 -X dev tests/run_strict.py [--start-directory DIR]
 """
+import argparse
 import gc
 import os
 import sys
@@ -13,7 +14,19 @@ import warnings
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def main():
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--start-directory",
+        "-s",
+        default="tests",
+        help="directory from which to discover tests (default: tests)",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
     unraisables = []
 
     def record_unraisable(args):
@@ -29,7 +42,7 @@ def main():
         sys.unraisablehook = record_unraisable
         with warnings.catch_warnings():
             warnings.simplefilter("error", ResourceWarning)
-            suite = unittest.TestLoader().discover("tests")
+            suite = unittest.TestLoader().discover(args.start_directory)
             result = unittest.TextTestRunner(verbosity=1).run(suite)
             # Finalize cycles before checking the hook's records and restoring it.
             del suite
