@@ -47,7 +47,7 @@ done in that repository.
   outcomes. By grep it never imports or calls `_claude_usage`, `_codex_usage`,
   `parse_agy_usage` or `parse_kiro_usage`; its only CLI probe is the opt-in model
   catalog (`agy_catalog`, off unless `platform_audit.model_list_cli`).
-- The daily tick calls these decoders on live output, every 5 to 15 minutes depending
+- The conductor tick calls these decoders on live output, every 5 to 15 minutes depending
   on the platform (`usage.py`, `warmup.py`, `resets.py`). That is real use of the
   production decoder, but it asserts nothing about shape. Three of the four fail
   closed to "no sample", which routing reads as `stale`. Codex has a deduplicated
