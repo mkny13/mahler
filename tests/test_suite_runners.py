@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 STRICT_RUNNER = ROOT / "tests" / "run_strict.py"
@@ -18,11 +19,7 @@ def run_runner(runner_path, args, suite_dir, dev_mode=False, extra_env=None):
     cmd.append(str(runner_path))
     cmd.extend(args)
 
-    env = dict(os.environ)
-    env["HOME"] = str(suite_dir)
-    env.pop("MAHLER_CONFIG", None)
-    pp = str(ROOT)
-    env["PYTHONPATH"] = f"{pp}:{env.get('PYTHONPATH', '')}" if env.get("PYTHONPATH") else pp
+    env = {"HOME": str(suite_dir), "PYTHONPATH": str(ROOT)}
     if extra_env:
         env.update(extra_env)
 
@@ -33,6 +30,44 @@ def run_runner(runner_path, args, suite_dir, dev_mode=False, extra_env=None):
         text=True,
         env=env,
     )
+
+
+class RunnerEnvironmentTests(unittest.TestCase):
+    def test_fixture_subprocess_does_not_inherit_state_or_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            suite_dir = Path(tmp)
+            (suite_dir / "test_environment.py").write_text(
+                "import os\n"
+                "from pathlib import Path\n"
+                "import unittest\n"
+                "from mahler import config\n\n"
+                "class EnvironmentTest(unittest.TestCase):\n"
+                "    def test_isolated_environment(self):\n"
+                "        home = Path(os.environ['HOME'])\n"
+                "        self.assertEqual(home.resolve(), Path.cwd().resolve())\n"
+                "        self.assertEqual(str(home / '.mahler'), config.STATE)\n"
+                "        self.assertEqual(str(home / '.mahler' / 'runs'), config.RUNS_DIR)\n"
+                "        self.assertEqual(config.REPO_ROOT, os.environ['PYTHONPATH'])\n"
+                "        for name in ('MAHLER_HOME', 'MAHLER_RUNS_DIR', 'MAHLER_CONFIG',\n"
+                "                     'GH_TOKEN', 'GITHUB_TOKEN', 'AWS_SECRET_ACCESS_KEY',\n"
+                "                     'UNRELATED_PARENT_SECRET'):\n"
+                "            self.assertNotIn(name, os.environ)\n"
+            )
+            parent_env = {
+                "MAHLER_HOME": "/fake/live-state",
+                "MAHLER_RUNS_DIR": "/fake/live-runs",
+                "MAHLER_CONFIG": "/fake/config",
+                "GH_TOKEN": "fake-token",
+                "GITHUB_TOKEN": "fake-token",
+                "AWS_SECRET_ACCESS_KEY": "fake-secret",
+                "UNRELATED_PARENT_SECRET": "fake-secret",
+                "PYTHONPATH": "/fake/pythonpath",
+            }
+            with mock.patch.dict(os.environ, parent_env):
+                for runner in (STRICT_RUNNER, RANDOM_RUNNER):
+                    with self.subTest(runner=runner.name):
+                        proc = run_runner(runner, ["--start-directory", str(suite_dir)], suite_dir)
+                        self.assertEqual(0, proc.returncode, proc.stderr)
 
 
 class StrictRunnerGateTests(unittest.TestCase):
