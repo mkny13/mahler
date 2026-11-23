@@ -90,10 +90,12 @@ DEFAULT_PLATFORM_AUDIT = {
     # Gate tier comparisons by samples on each side and done-rate gap in points.
     "inversion_min_runs": 10,
     "inversion_margin_pct": 15.0,
-    # Issue #421 (D33): model candidates. `model_list_cli` opts the audit into
-    # asking a CLI for its model list (point 3 of the plan) — off by default,
-    # because a CLI call costs quota or time the audit otherwise never spends.
-    "model_list_cli": False,
+    # Issue #421 (D33): model candidates. `model_list_cli` lets the audit ask
+    # a CLI for its model list (point 3 of the plan). On by default since
+    # mahler#1706: the only such probe is `agy models`, which costs no quota
+    # and is bounded (#1018), and leaving it off let a retired agy pin
+    # (gemini-3.1-pro-high) and the Gemini 4 catalog go unnoticed.
+    "model_list_cli": True,
     "candidate_window_days": 180,  # runs newer than this back the candidates
 }
 
@@ -154,6 +156,19 @@ DEFAULTS = {
         "claude-haiku-4-5-20251001": {"in": 0.80, "out": 4.00},
         "claude-sonnet-5": {"in": 3.00, "cached_in": 0.30, "out": 15.00},
         "claude-sonnet-5-5": {"in": 2.00, "cached_in": 0.20, "out": 10.00},
+        # Antigravity aliases (mahler#1706): agy IDs carry their effort, so
+        # each priced effort repeats the model's API-equivalent basis.
+        "claude-sonnet-5-5-medium": {"in": 2.00, "cached_in": 0.20, "out": 10.00},
+        # https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-neon/
+        # ($3 in, $0.15 cached, $15 out per 1M tokens; read 2026-11-23).
+        "gemini-4-neon-medium": {"in": 3.00, "cached_in": 0.15, "out": 15.00},
+        "gemini-4-neon-high": {"in": 3.00, "cached_in": 0.15, "out": 15.00},
+        # https://9to5google.com/2026/11/18/gemini-4-neon-announcement/
+        # (Argon list price $4 in / $20 out after the promo ends 2026-11-30).
+        "gemini-4-argon-medium": {"in": 4.00, "out": 20.00},
+        "gemini-4-argon-high": {"in": 4.00, "out": 20.00},
+        # Gemini 4 Hydrogen and the Orchestrator have no published list
+        # price yet: unknown, not invented (DESIGN D33, mahler#559).
     },
     "defaults": {
         "enabled": False,
@@ -255,14 +270,14 @@ DEFAULTS = {
     "routing": {
         # sorting is light: when Claude is over its reserve, spend Gemini, and
         # keep Antigravity's scarcer Claude/Opus pool for building
-        "sort": ["claude", "agy-gemini", "agy-claude"],
+        "sort": ["claude", "agy-gemini", "agy-argon", "agy-claude"],
         # planning is a separate route (DESIGN D21): goals, audits, and size:l
         # items are planned by Opus only; when Opus is over its line, they wait
         "plan": ["claude-opus"],
         # copilot-high sits right after copilot: min_size: "l" gates it to
         # size:l items only (mahler#192), so it never changes routing for
         # normal-size items.
-        "build": ["agy-claude", "agy-gemini", "cline-free", "copilot",
+        "build": ["agy-claude", "agy-gemini", "agy-argon", "cline-free", "copilot",
                   "copilot-high", "kilo", "claude-opus", "claude"],
     },
     "platforms": {
@@ -304,6 +319,9 @@ DEFAULTS = {
             "variants": ["claude-opus-5-5", "claude-opus-5-5@medium",
                          "claude-opus-5-5@high"],
         },
+        # Antigravity's model IDs carry their effort (`gemini-4-neon-high`),
+        # so agy variants name exact `agy models` IDs and never use `@effort`
+        # (mahler#1706; catalog read 2026-11-23, agy 1.5.15).
         "agy-claude": {
             "enabled": True, "kind": "agy", "pool": "Claude and GPT models",
             "model": "claude-opus-5-5-medium",
@@ -311,16 +329,37 @@ DEFAULTS = {
             "soft": {"5h": 85, "weekly": 85},
             "hard": {"5h": 90, "weekly": 90},
             "stale_minutes": 5,
+            # The pool is charged in proportion to token cost, so Sonnet
+            # stretches it further than Opus.
+            "variants": ["claude-opus-5-5-medium", "claude-sonnet-5-5-medium"],
         },
         "agy-gemini": {
             "enabled": True, "kind": "agy", "pool": "Gemini Models",
-            "model": "gemini-3.1-pro-high",
+            "model": "gemini-3.8-flash-high",
             "max_size": "m", "tier": 3,
             "soft": {"5h": 85, "weekly": 85},
             "hard": {"5h": 90, "weekly": 90},
             "stale_minutes": 5,
-            "variants": ["gemini-3.1-pro-high", "gemini-3.8-flash@low",
-                         "gemini-3.8-flash@medium"],
+            # Incumbent first. Hydrogen is Google's Flash successor; Neon and
+            # the Orchestrator (Neon planner, Hydrogen executor in one run)
+            # are the stronger, costlier escalation candidates (D33).
+            "variants": ["gemini-3.8-flash-high", "gemini-4-hydrogen-medium",
+                         "gemini-4-hydrogen-high", "gemini-4-neon-medium",
+                         "gemini-4-neon-high", "gemini-pro-orchestrator-neon"],
+            "variant_tiers": {"gemini-4-neon-medium": 3, "gemini-4-neon-high": 3,
+                              "gemini-pro-orchestrator-neon": 3},
+        },
+        # Gemini 4 Argon has its own weekly-only quota on AI Pro, separate
+        # from the "Gemini Models" pool, so this slot adds free capacity.
+        "agy-argon": {
+            "enabled": True, "kind": "agy", "pool": "Gemini 4 Argon",
+            "model": "gemini-4-argon-medium",
+            "max_size": "m", "tier": 2,
+            "windows": ["weekly"],   # no 5h bucket in agy's /usage
+            "soft": {"weekly": 85},
+            "hard": {"weekly": 90},
+            "stale_minutes": 5,
+            "variants": ["gemini-4-argon-medium", "gemini-4-argon-high"],
         },
     },
     "projects": {},

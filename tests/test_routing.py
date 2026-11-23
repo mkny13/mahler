@@ -569,7 +569,7 @@ class BurstTests(unittest.TestCase):
     def test_burst_build_order_moves_claude_first(self):
         self.assertEqual(router.burst_build_order(self.cfg),
                          ["claude-opus", "claude", "agy-claude", "agy-gemini",
-                          "cline-free", "copilot", "copilot-high", "kilo"])
+                          "agy-argon", "cline-free", "copilot", "copilot-high", "kilo"])
 
     def test_pick_without_burst_prefers_free_tier(self):
         led = led_with(**{"claude": (85, 85), "agy-claude": (10, 10), "agy-gemini": (10, 10)})
