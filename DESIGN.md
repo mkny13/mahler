@@ -19,9 +19,9 @@ lives anywhere else.
 Mahler runs on an always-on Mac. It watches those issues. A planning agent sorts each
 new one: it writes down what "done" means, sizes it, and splits it if it's big. Once an item
 is sorted, Mahler hands it to whichever configured platform has capacity. The agent works on
-its own branch and worktree, implements the change, verifies it, commits, and pushes. The
-deterministic conductor opens the PR, watches CI, confirms the merge, and records what you
-should check (D18).
+its own branch and worktree, implements the change, verifies it, and commits locally. The
+deterministic conductor snapshots and pushes the branch, opens the PR, watches CI,
+confirms the merge, and records remaining coverage (D18).
 
 If a platform runs low on quota mid-task, the agent saves its work and leaves a handoff note on
 the issue, and the next platform picks up exactly where it stopped. If *you* start working on
@@ -371,8 +371,8 @@ When an interactive session claims an item an autonomous run holds:
 
 1. Mahler grants the interactive claim **immediately**, and marks the auto lease `yielding`.
 2. The auto run is told to yield at its next hook or heartbeat check. It gets 2 minutes to
-   commit, push its branch and post a handoff note. After that the runner stops it and Mahler
-   takes a snapshot itself (below).
+   commit locally and report its handoff. The conductor snapshots, pushes and posts the
+   durable note (D18); after the grace period the runner stops the agent.
 3. Your session is told: "Antigravity was on this for 14 minutes. Its work is on
    `mahler/12-dark-mode` (3 commits); handoff note is on the issue. Continue from that branch."
    By default it does.
@@ -643,8 +643,9 @@ doesn't rely on that and stops on its own thresholds regardless.
 
 ### D9 — Handoff protocol
 
-- **Checkpoint continuously:** every run's recipe says to commit after each meaningful step and
-  push the `mahler/*` branch at least every 10 minutes. A hard kill loses minutes, not hours.
+- **Checkpoint continuously:** every build/fix recipe says to commit after each meaningful step and
+  at least every 10 minutes. The conductor snapshots and pushes at handoff (D18).
+  A hard kill loses minutes, not hours.
 - **Handoff note** is an issue comment. It's durable, readable on the phone, and readable by any
   platform:
   ```
@@ -697,9 +698,11 @@ doesn't rely on that and stops on its own thresholds regardless.
   `CLAUDE.md`/`AGENTS.md` (read by Claude, Cline and agy), with the claim/heartbeat/handoff rules.
 - **ntfy** pings: *needs you* · *shipped work* · *handoff happened* · *failed and parked* ·
   *daily digest* · *Codex quota exhausted* (high-priority on quota probe, cleared on recovery).
-  Messages carry a title and a console link only, never secrets or personal
-  data. The POC uses ntfy.sh with an unguessable topic; self-hosting on the Mac mini is an
-  option later.
+  Messages carry titles, summary bodies and console links; the digest includes
+  roll-up counts, item titles and handoff descriptions (D45). Credential redaction
+  covers titles/bodies and unsafe click URLs are omitted. This heuristic is not
+  a guarantee that arbitrary personal text is safe to send. The POC uses ntfy.sh with
+  an unguessable topic; self-hosting on the Mac mini is an option later.
 - **GitHub comments are commands**, which is handy from the GitHub app:
   - `/mahler go` · `/mahler park` · `/mahler platform <name|auto>`
   - Any reply on a `needs-you` item is taken as the answer.
@@ -1268,7 +1271,7 @@ are best-effort and never gate finalization or prompt construction.
 
 **Machine backups** (updated 2026-09-12, after you re-included `scripts/` in Time Machine):
 
-- **GitHub** holds everything committed and pushed. Runs push their branches continuously.
+- **GitHub** holds everything committed and pushed. Runs commit locally; the conductor snapshots and pushes their branches (D18).
 - **Time Machine** now includes `/Volumes/ExtSSD160/scripts`: fast local restore of files.
 - **Backblaze** (continuous, offsite) covers the whole SSD, including gitignored files,
   local databases and non-git folders.
@@ -1995,17 +1998,18 @@ is [docs/console/design.md](docs/console/design.md): desktop `3a`, phone `2a`, c
   design needs none of them, and the daemon must never break itself on a dependency.
 - **One state, two layouts.** `mahler/console/state.py` builds one plain-data snapshot,
   including every sentence the page shows, and `page.py` lays it out for desktop and for
-  phone in the same document; a media query picks. What only the browser needs to know
+  phone; the current renderer selects one layout/section per response. Browser state
   (view, tab, theme, expanded groups, an open overlay) lives on `<html>`, and the 30-second
   refresh swaps the rest. The server is the only renderer: after every write the page
   simply re-renders from it.
 - **Writes are `POST /api/<action>`**, and each one writes a ledger event. They're accepted
   only from this machine (which is how `tailscale serve` connects) or a Tailscale address,
-  with an `X-Mahler-Console: 1` header, a JSON body, and a same-origin `Origin`. A cross-site
+  with an `X-Mahler-Console: 1` header and a JSON body. A supplied foreign `Origin`
+  is rejected; missing Origin is accepted for non-browser callers. A cross-site
   page can't send that header without a CORS preflight, and the server answers none.
   - Writes that only touch the ledger apply at once, as `mahler pause` and `mahler peak --off`
     already do from outside the tick: pause and resume, the peak override, clearing a
-    backoff, marking the digest seen.
+    backoff, marking the digest seen. Settings also apply directly through the config API.
   - Writes that reach GitHub or a running agent (answering a needs-you item, failure reports,
     capture, stop-and-hand-off, a revert) are queued in the ledger and applied by the
     tick. Every GitHub call keeps the project's own login (D25), and only the tick touches
@@ -2442,8 +2446,8 @@ whether to act on the report.
 Decided 2026-10-06 (mahler#743, contract in mahler#753). Mahler sees practices
 across projects, but green CI can mean no tests at all. A global
 `practices-audit` pass will expose these gaps without silently standardizing
-repositories. The read-only scanner and proposal engine ship in #754;
-cadence/tick integration and the first baseline remain in #755. They do not
+repositories. The read-only scanner and proposal engine shipped in #754;
+cadence/tick integration is now implemented in `practices_audit.queue`. They do not
 change D18 merge behavior.
 
 **Finite scope and checklist.** The runtime inventory is exactly
@@ -2467,9 +2471,9 @@ project name substituted: interactive sessions use `mahler claim <project>#N`
 before work, `mahler heartbeat <project>#N` while working, `mahler ship
 <project>#N` after pushing, and `mahler release <project>#N` when stopping
 unfinished. Work uses branch `mahler/<N>-short-slug` and PR body `Fixes #N`.
-Autonomous build runs verify, commit and push, then end with a STATUS line;
-the conductor opens, reviews and merges their PR (D18). A pointer to canonical
-instructions is followed before checking these markers, rather than flagged
+Autonomous build runs verify and commit locally, then end with a STATUS line;
+the conductor snapshots, pushes, opens, reviews and merges their PR (D18).
+A pointer to canonical instructions is followed before checking these markers, rather than flagged
 as missing text in the pointer file itself.
 
 Each project produces one result per check: pass, gap, or unknown, with cited
@@ -2485,8 +2489,9 @@ model judgments about test quality or spreading practices are deferred.
 GitHub client. Literal PR workflow commands and referenced package/shell
 scripts supply CI evidence. Conditional, dynamic, reusable or otherwise
 unresolved execution is unknown; arbitrary Python runner control flow is not
-inferred. The tracked-text scan skips binary, unreadable and over-2-MB files
-with explicit unknown evidence. An optional, versioned (`version: 1`), tracked
+inferred. The tracked-text scan excludes recognized binary assets; unrecognized binary,
+unreadable and over-2-MB files produce explicit unknown evidence. An optional,
+versioned (`version: 1`), tracked
 `.mahler/secret-reviews.json` manifest allows recording explicit reviews of
 proven non-secret candidates (runtime expressions, prose/examples, synthetic test
 fixtures). Each entry binds an exact repository-relative path, complete-file
@@ -2499,10 +2504,16 @@ schemas, unsafe paths, invalid detector IDs, and duplicate entries are rejected
 with a redacted unknown diagnostic. Stale reviews (unmatched against current
 candidates) remain visible as diagnostics and prevent a clean pass. The check
 preserves `gap > unknown > pass` precedence: unreviewed candidates yield `gap`,
-while uninspected binary or oversized files and review metadata diagnostics yield
+while unrecognized binary or oversized files and review metadata diagnostics yield
 `unknown`, exposing the count of reviewed candidates without asserting that the
 repository is credential-free or proving absence of secrets. Instruction pointers
 are local, cycle-bounded and cannot escape the configured repository.
+
+Documented architectural decisions/exemptions in `.mahler/project.toml`,
+`docs/DECISIONS.md`, `DECISIONS.md`, or effective agent instructions can resolve a
+non-pass check to a cited pass. The scanner records that rationale explicitly; it
+is not proof that an exempted mechanism exists. Recognized binary assets alone do
+not prevent a clean tracked-text result.
 
 **Global cadence, one anchor.** `config.practices_audit_policy` supplies complete,
 independent defaults even for a minimal config: `enabled = true`, `project =
@@ -2548,7 +2559,9 @@ as absence. GitHub markers preserve reuse across restarts and partial retries.
 proposal links and filing errors. A caller resuming partial filing supplies
 `report_url`; it must persist that identity and retry errors as part of the
 #755 scheduling work. Closed proposals receive current evidence as a comment
-without reopening. Failed marker lookup never creates a replacement issue.
+without reopening. When a check becomes pass, an existing open proposal is closed
+with resolution evidence; this changes issue metadata, not repository contents.
+Failed marker lookup never creates a replacement issue.
 
 Reset the D20 checkpoint only after the anchor report is successfully filed;
 failed report creation and dry runs leave it unchanged. Persist the report

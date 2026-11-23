@@ -39,72 +39,42 @@ Playwright and preview deploys already in place, and it has real personal data.
 - #925 delivered the approved console panel. One live work conversation and its confirmed
   issue links remain post-merge evidence; the operator-started discussion feature is shipped.
 
-## Current state (2026-09-23)
+## Current state (repository evidence, 2026-11-22)
 
-Phases 0, B and 1 are done and the project has been running past the original phase
-sequence for a while — the day-to-day reality no longer matches "one phase at a time,"
-so this section says where things actually stand; the phase list below stays as the
-detailed record.
+The four committed audits establish shipped implementation, not live machine or project
+inventory: [lifecycle](docs/audits/1670-lifecycle-state.md),
+[execution/shipping](docs/audits/1670-execution-shipping.md),
+[routing/accounts](docs/audits/1670-routing-quota-accounts.md), and
+[operator/maintenance](docs/audits/1670-operator-maintenance.md).
+The phase records below preserve dated rollout observations and original plans;
+operator configuration remains the authority for enablement, credentials and exposure.
 
-- **Seven projects are enabled on the primary Mac mini** under the same 60-second launchd tick:
-  `google-chat-nav` (`makastel_ncstate/google-chat-nav`), `groundwork` (`mkny13/groundwork`), `hockey`
-  (`mkny13/hockey-draft-copilot`), `mahler`, `movebreak`, `phish-in` (`mkny13/couch-tour`),
-  and `sit-stand-walk` (`makastel_ncstate/sit-stand-walk`). This is a dated inventory snapshot; the operator's
-  `~/.mahler/config.toml` remains authoritative. The full isolated unit suite and
-  randomized-order runner are Mahler's release contract; avoid embedding a test count here
-  because it changes almost daily.
-- **Self-hosting (D17) works:** mahler builds itself through the same lease/ship pipeline
-  as any managed project, with CI-gated self-update and rollback.
-- **The 2026-09-22/23 launch outage and what it changed.** A bug in #395 made every launch
-  fail for about 18 hours (7,277 failed launches, zero runs), silently: launch errors were
-  caught per item, so ticks looked healthy and D17's rollback never fired (mahler#409, fixed
-  by #410). Since then:
-  - a launch circuit breaker pages and pauses launches, with a canary every 30 minutes
-    (mahler#411)
-  - the launcher rolls back to the last commit that actually launched a run
-    (`launch_ok`), and never self-updates back into a rolled-back commit (`bad_sha`)
-    (mahler#425; the launcher was reinstalled on 2026-09-23)
-  - the outage also leaked about 7,300 worktrees from failed launches, which were removed
-    by hand; mahler#434 stops launch failures leaking them
-- **The independent review gate (D11, #395) is live**, and its first failures exposed bugs
-  in its fix loop: the attempt budget counts pre-PR failures, fixes can push to a stray
-  `-r<id>` branch, and a reviewer can review its own fix (mahler#433).
-- **Free builders:** most Cline and Kilo "failures" were the harness, not the model: early
-  stops, a resume nudge that had never worked, and network drops. mahler#426 fixed the
-  resume and added it for Kilo. Whether to decompose further for the free streams waits on
-  per-size data from the D33 scorecard.
-- **D33 (cheapest variant that does the job) is in progress** under goal mahler#413. A
-  variant is a model at a reasoning effort, and new versions enter as candidates, not
-  replacements. Effort per platform (#415), per-run tokens and cost (#416), named routing
-  groups (#419) and platform variants — several model x effort options per login, sharing
-  its run slot (#420) — have shipped; the scorecard, exploration and measured routing are
-  queued. Config steps that only a chat session may make (backfill, prices, declaring real
-  variants and work-account slots, switching on measured routing) are handled by the daily
-  scheduled task `mahler-d33-followup`.
-- **Interaction today is GitHub + chat + ntfy + the phone/desktop console.** Phase 2's
-  console is built; the full MCP design remains incomplete:
-  - a minimal MCP server (`mahler/mcp.py`): `list_items`, `add_item`, `claim`,
-    `heartbeat`, `release`, `handoff`, `next_id` — missing `ask_user`, `report_progress`,
-    `get_context` from the original Phase 3 list
-  - the operator console (`mahler serve`, its own launchd job; DESIGN D27): status, quota,
-    idle reasons, backlog and dependency views, capture with attachments, needs-you answers
-    with Undo, live logs, stop-and-handoff, optional failure reports, and CI-gated merge reverts
-  - GitHub comment commands (`/mahler go`, `/mahler park`, `/mahler platform <name>`) and
-    a plain reply on a `needs-you` item
-  - Claude Code `SessionStart`/`PreToolUse`/`PostToolUse`/`UserPromptSubmit` hooks
-    (`mahler hooks`), a daily digest (`digest.maybe_send`, wired into every tick), and
-    a deduplicated high-priority ntfy alert when Codex quota is exhausted during probe
-    refreshes (cleared upon recovery; prompts to reset in ChatGPT if reset credits exist)
-  - the rest of the MCP tool set remains queued; manual-verdict app panels are superseded (D10)
-- **Onboarding order diverged from the Phase 5 plan.** Couch Tour and Movebreak went live,
-  and Hockey Draft Copilot and Sit Stand Walk joined even though they were not in the original
-  sequence. `mental-jukebox` and `puppy-growth-chart` remain candidates rather than enabled
-  projects. Phase 5 preserves the intended/historical order and records the out-of-plan
-  additions; it is not the live authority.
-- **Maintenance is steady-state work.** Manual-audit deduplication (mahler#204), periodic
-  platform capability review (mahler#206), and platform × role × size estimates
-  (mahler#207) have shipped. Periodic documentation accuracy/onboarding review was added in
-  mahler#336 so these docs are checked by the same cadence/throughput scheduler.
+- **Lifecycle and self-hosting:** eleven item states, epoch-fenced leases, canonical
+  remote lease operations, trust-gated intake, timed priority and external waits are
+  implemented. The launcher gates updates on CI and local tests, with launch breakers,
+  canaries and rollback to launch-proven commits. Launcher installation is separate.
+- **Execution and shipping:** agents verify and commit locally; the conductor snapshots,
+  pushes, opens PRs, watches CI, coordinates independent head-bound review and confirms
+  merges. Post-merge checks and 14 quiet days support automatic completion. Optional
+  failure reports create linked p1 fixes; manual-verdict panels are superseded (D10).
+- **Routing and accounts:** deterministic account-aware routing, fail-closed metered
+  quota freshness, Claude burst, reset credits, warm-ups, model availability, run usage,
+  scorecard and historical capacity reporting are built. Opt-in runners and the D41
+  confirmed-credit gateway/Agent SDK integration exist; tests do not prove live enablement.
+  Work GitHub and Claude identities require scoped configuration with no personal fallback.
+- **Operator surfaces:** phone/desktop console, settings, capture, answers with Undo,
+  What changed/failure reports, logs, release feed, CLI, seven-tool local MCP, and restricted
+  operator-started discussions are shipped. Atlas inventory and project-scoped lessons/history
+  are built. The remaining MCP tools (`ask_user`, `report_progress`, `get_context`) are planned.
+- **Maintenance:** scheduled project reviews, platform and practices audits, ledger and
+  PostgreSQL backups, cleanup, digests, net backlog and notification redaction are implemented.
+  Practices audits file evidence/proposals and reconcile resolved proposals; they never
+  remediate repositories or change policy. Automated restore drills, other hosted-store
+  backups and staging seeding remain planned. Backup validation is not a restore drill.
+- **Verification:** CI runs the repository guard, unit discovery, randomized-order runner
+  and strict resource checks. The audits used hermetic fixtures; they do not attest to live
+  provider behavior, console exposure, GitHub merges, desktop smoke or production restores.
+
 
 ---
 
@@ -332,7 +302,7 @@ automated-or-14-day-quiet completion and optional failure reports.
 
 ## Phase 5 — Cutover and rollout
 
-**Status: reordered by reality.** The primary Mac mini currently enables `mahler`,
+**Historical rollout snapshot (2026-09-23), not current inventory.** The recorded mini enabled `mahler`,
 `groundwork`, `movebreak`, `phish-in`, `hockey`, and `sit-stand-walk`. Current enablement is
 machine state in `~/.mahler/config.toml`; this dated list only makes the rollout history
 legible. Unchecked project entries below are remaining candidates, not a claim about live
@@ -381,7 +351,7 @@ config.
       `com.mike.dispatch` on 2026-09-16; `dispatch.py`, the legacy `thread.py` runtime,
       ThreadBar, and Cline Kanban are retired. ThreadBar will not be repointed at Mahler.
       Mahler is the only autonomous dispatcher for managed projects (DESIGN D2).
-  - **Manual machine cleanup still required:** stop/remove the currently running ThreadBar;
+  - **Manual machine cleanup still required:** verify whether the historically running ThreadBar still needs removal;
     disable every entry in `~/ai-tools/dispatch.toml` (especially `mental-jukebox`); then
     archive or remove the unloaded dispatch plist and update/archive `~/ai-tools` NOTES/TASKS.
     These files and processes live outside this repository and are not changed by a Mahler PR.
