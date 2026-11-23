@@ -237,18 +237,19 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(router.candidates(self.cfg, "build", account="other"), [])
 
     def test_candidates_for_accounts_round_robin_interleaves(self):
-        # personal build: agy-claude, agy-gemini, cline-free, copilot,
-        # copilot-high, kilo, claude-opus, claude
+        # personal build: agy-claude, agy-gemini, agy-argon, cline-free,
+        # copilot, copilot-high, kilo, claude-opus, claude
         # work build: work-copilot, codex-work, claude-opus-work, claude-work
         merged = router.candidates_for_accounts(self.cfg, "build", ["personal", "work"])
         self.assertEqual(merged, [
             "agy-claude", "work-copilot", "agy-gemini", "codex-work",
-            "cline-free", "claude-opus-work", "copilot", "claude-work",
-            "copilot-high", "kilo", "claude-opus", "claude"])
+            "agy-argon", "claude-opus-work", "cline-free", "claude-work",
+            "copilot", "copilot-high", "kilo", "claude-opus", "claude"])
 
     def test_candidates_for_accounts_preserves_order_when_one_account_runs_out(self):
         merged = router.candidates_for_accounts(self.cfg, "sort", ["personal", "work"])
-        self.assertEqual(merged, ["claude", "claude-work", "agy-gemini", "agy-claude"])
+        self.assertEqual(merged, ["claude", "claude-work", "agy-gemini", "agy-argon",
+                                  "agy-claude"])
 
     def test_pick_with_accounts_merges_instead_of_falling_back_by_order(self):
         # agy-claude and agy-gemini (personal's first two picks) are busy;

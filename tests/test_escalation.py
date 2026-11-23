@@ -81,6 +81,9 @@ class TierEscalationTests(unittest.TestCase):
         self.addCleanup(self.led.close)
 
         cfg = copy.deepcopy(config.DEFAULTS)
+        # These tests use the real clock; without this, Claude's weekday peak
+        # window (D22) blocks the Claude picks they expect on weekday mornings.
+        cfg["claude_peak"]["enabled"] = False
         self.ctx = StubCtx(cfg, self.led)
 
     def tearDown(self):

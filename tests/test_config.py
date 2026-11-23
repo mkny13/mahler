@@ -1,5 +1,6 @@
 """Named route groups stay raw in settings and expand at dispatch time."""
 import copy
+import json
 import io
 from pathlib import Path
 import tempfile
@@ -601,9 +602,16 @@ class PlatformVariantTests(unittest.TestCase):
             "claude-opus/claude-opus-5-5/default",
             "claude-opus/claude-opus-5-5/medium",
             "claude-opus/claude-opus-5-5/high",
-            "agy-gemini/gemini-3.1-pro-high/default",
-            "agy-gemini/gemini-3.8-flash/low",
-            "agy-gemini/gemini-3.8-flash/medium",
+            "agy-claude/claude-opus-5-5-medium/default",
+            "agy-claude/claude-sonnet-5-5-medium/default",
+            "agy-gemini/gemini-3.8-flash-high/default",
+            "agy-gemini/gemini-4-hydrogen-medium/default",
+            "agy-gemini/gemini-4-hydrogen-high/default",
+            "agy-gemini/gemini-4-neon-medium/default",
+            "agy-gemini/gemini-4-neon-high/default",
+            "agy-gemini/gemini-pro-orchestrator-neon/default",
+            "agy-argon/gemini-4-argon-medium/default",
+            "agy-argon/gemini-4-argon-high/default",
             "codex-low/gpt-5.6-luna/default", "codex-low/gpt-6-luna/low",
             "codex-low/gpt-6-luna/medium", "codex-low/gpt-6-luna/high",
             "codex/gpt-5.6-terra/default", "codex/gpt-6-luna/high",
@@ -702,17 +710,81 @@ class BuiltInVariantCandidatesTests(unittest.TestCase):
             "claude-opus-5-5", "claude-opus-5-5@medium",
             "claude-opus-5-5@high"])
         self.assertEqual(platforms["agy-gemini"]["variants"], [
-            "gemini-3.1-pro-high", "gemini-3.8-flash@low",
-            "gemini-3.8-flash@medium"])
+            "gemini-3.8-flash-high", "gemini-4-hydrogen-medium",
+            "gemini-4-hydrogen-high", "gemini-4-neon-medium",
+            "gemini-4-neon-high", "gemini-pro-orchestrator-neon"])
+        self.assertEqual(platforms["agy-claude"]["variants"], [
+            "claude-opus-5-5-medium", "claude-sonnet-5-5-medium"])
+        self.assertEqual(platforms["agy-argon"]["variants"], [
+            "gemini-4-argon-medium", "gemini-4-argon-high"])
 
     def test_default_route_order_is_unchanged_by_variants(self):
         cfg = config.resolve_platforms(copy.deepcopy(config.DEFAULTS))
         self.assertEqual(router.candidates(cfg, "build"), [
-            "agy-claude", "agy-gemini", "cline-free", "copilot",
+            "agy-claude", "agy-gemini", "agy-argon", "cline-free", "copilot",
             "copilot-high", "kilo", "claude-opus", "claude"])
         self.assertEqual(router.candidates(cfg, "sort"),
-                         ["claude", "agy-gemini", "agy-claude"])
+                         ["claude", "agy-gemini", "agy-argon", "agy-claude"])
         self.assertEqual(router.candidates(cfg, "plan"), ["claude-opus"])
+
+
+class AntigravityCatalogTests(unittest.TestCase):
+    """mahler#1706: agy slots name exact `agy models` IDs (agy 1.5.15)."""
+
+    # `agy models`, 2026-11-23, minus models no slot uses.
+    CATALOG = {
+        "gemini-3.8-flash-high", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-high",
+        "gemini-4-neon-medium", "gemini-4-neon-high", "gemini-pro-orchestrator-neon",
+        "gemini-4-argon-medium", "gemini-4-argon-high",
+        "claude-opus-5-5-medium", "claude-sonnet-5-5-medium",
+    }
+
+    def expanded(self):
+        return config.resolve_platforms(copy.deepcopy(config.DEFAULTS))["platforms"]
+
+    def test_every_agy_pin_and_variant_is_a_catalog_id_without_effort(self):
+        for name, pconf in self.expanded().items():
+            if pconf.get("kind") != "agy":
+                continue
+            with self.subTest(platform=name):
+                self.assertIn(pconf["model"], self.CATALOG)
+                self.assertNotIn("effort", pconf)
+                self.assertNotIn("--effort", platforms.argv_for(
+                    pconf, "prompt", "/worktree", "build", 60))
+        for pconf in config.DEFAULTS["platforms"].values():
+            if pconf.get("kind") == "agy":
+                self.assertFalse(any("@" in v for v in pconf.get("variants", [])))
+
+    def test_retired_gemini_pro_pin_is_gone(self):
+        self.assertNotIn("gemini-3.1-pro-high", json.dumps(config.DEFAULTS["platforms"]))
+
+    def test_neon_and_orchestrator_rank_as_escalation(self):
+        plats = self.expanded()
+        self.assertEqual(plats["agy-gemini/gemini-4-hydrogen-medium/default"]["tier"],
+                         plats["agy-gemini"]["tier"])
+        for model in ("gemini-4-neon-medium", "gemini-4-neon-high",
+                      "gemini-pro-orchestrator-neon"):
+            self.assertEqual(plats[f"agy-gemini/{model}/default"]["tier"], 3)
+
+    def test_argon_slot_spends_its_own_weekly_only_pool(self):
+        plats = self.expanded()
+        argon = plats["agy-argon"]
+        self.assertEqual(argon["pool"], "Gemini 4 Argon")
+        self.assertEqual(argon["windows"], ["weekly"])
+        self.assertEqual(argon.get("quota_group", "agy-argon"), "agy-argon")
+        self.assertEqual(plats["agy-argon/gemini-4-argon-high/default"]["quota_group"],
+                         "agy-argon")
+        self.assertNotEqual(plats["agy-gemini"].get("quota_group", "agy-gemini"),
+                            "agy-argon")
+        self.assertEqual(router.cost_class(argon), "free")
+
+    def test_priced_new_models_and_unknown_hydrogen(self):
+        prices = config.DEFAULTS["prices"]
+        self.assertEqual(prices["gemini-4-neon-high"],
+                         {"in": 3.00, "cached_in": 0.15, "out": 15.00})
+        self.assertEqual(prices["gemini-4-argon-medium"], {"in": 4.00, "out": 20.00})
+        self.assertNotIn("gemini-4-hydrogen-medium", prices)
+        self.assertNotIn("gemini-pro-orchestrator-neon", prices)
 
 
 class CopilotCandidatesTests(unittest.TestCase):

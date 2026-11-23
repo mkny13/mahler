@@ -60,6 +60,7 @@ def all_fresh(led, pct=10):
         fresh(led, p, "weekly", pct, resets_in=timedelta(days=3))
     for p in ("copilot", "copilot-high"):
         fresh(led, p, "monthly", pct, resets_in=timedelta(days=10))
+    fresh(led, "agy-argon", "weekly", pct, resets_in=timedelta(days=3))
 
 
 class SystemStateTests(unittest.TestCase):

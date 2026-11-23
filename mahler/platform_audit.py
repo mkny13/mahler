@@ -39,6 +39,7 @@ PLATFORM_ALIASES = {
     "claude-opus": ["claude code", "claude-opus"],
     "agy-claude": ["antigravity: claude", "agy-claude"],
     "agy-gemini": ["antigravity: gemini", "agy-gemini"],
+    "agy-argon": ["antigravity: gemini 4 argon", "agy-argon"],
     "cline-free": ["cline"],
     "kilo": ["kilo"],
     "kiro": ["kiro cli", "kiro"],

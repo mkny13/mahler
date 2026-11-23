@@ -247,7 +247,7 @@ screenshot_path = []              # inherited operator absolute executable direc
 # Priority projects reject broken references and undeclared accounts.
 # The console preserves @tokens when saving settings.
 # [groups]
-# free = ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo"]
+# free = ["agy-claude", "agy-gemini", "agy-argon", "cline-free", "copilot", "kilo"]
 # personal-build = ["@free", "copilot-high", "agy-gemini-pro", "claude-opus", "claude"]
 # work-plan = ["work-claude-high", "work-codex-gpt1-high", "work-codex-gpt1-astra"]
 # work-build = ["work-copilot", "work-codex-gpt1-low", "work-codex-gpt1-medium", "work-codex-gpt1-high", "work-codex-gpt1-astra", "work-claude-high", "work-claude-medium", "work-claude-low"]
@@ -256,7 +256,7 @@ screenshot_path = []              # inherited operator absolute executable direc
 
 # [routing]
 # plan = ["claude-opus"]         # goals, audits, size:l → Opus only (DESIGN D21)
-# sort = ["claude", "agy-gemini", "agy-claude"]
+# sort = ["claude", "agy-gemini", "agy-argon", "agy-claude"]
 # build = ["@personal-build"]
 # A machine logged into ChatGPT through Codex CLI can opt in explicitly:
 # plan = ["codex", "claude-opus"]
@@ -362,7 +362,12 @@ screenshot_path = []              # inherited operator absolute executable direc
 # codex: gpt-5.6-terra, then GPT-6 Luna high and GPT-6 Sol low
 # claude: claude-sonnet-5-5, then Sonnet 5.5 low/high and Opus 5.5 low
 # claude-opus: Opus 5.5 default/medium/high
-# agy-gemini: current Pro, then Gemini Flash low/medium
+# agy-claude: Opus 5.5 medium, then Sonnet 5.5 medium
+# agy-gemini: Gemini 3.8 Flash high, then Gemini 4 Hydrogen medium/high,
+#   Neon medium/high and Orchestrator (Neon) (tier 3)
+# agy-argon: Gemini 4 Argon medium, then high (its own weekly-only pool)
+# Agy variants are exact `agy models` IDs (the ID carries the effort), never
+# `model@effort`. An override of [groups]/[routing] must list agy-argon itself.
 
 # Work logins on this same machine (DESIGN D25). Log each CLI in once with its
 # env var set (e.g. `CLAUDE_CONFIG_DIR=~/.claude-work claude`, then /login).
