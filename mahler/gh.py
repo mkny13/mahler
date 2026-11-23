@@ -1452,8 +1452,9 @@ def dependency_target(dep, project, projects):
         return project, dep
     repo = dep["repo"].casefold()
     matches = [p["name"] for p in projects if p.get("enabled") and
-               (p["repo"].casefold() if "/" in repo else
-                p["repo"].rsplit("/", 1)[-1].casefold()) == repo]
+               (p["repo"].casefold() == repo if "/" in repo else
+                repo in (p["name"].casefold(),
+                         p["repo"].rsplit("/", 1)[-1].casefold()))]
     return (matches[0], dep["number"]) if len(matches) == 1 else None
 
 

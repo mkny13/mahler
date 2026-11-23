@@ -1428,14 +1428,28 @@ class NamedFailureReleaseTests(unittest.TestCase):
         self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='named_failures_released'")), len(events))
 
     def test_reference_resolution(self):
-        from mahler.gh import referenced_items
+        from mahler.gh import dependency_target, depends_of, referenced_items
         projects = [{"name": name, "repo": repo, "enabled": enabled} for name, repo, enabled in
                     (("mahler", "owner/mahler", True), ("app", "owner/app", True),
-                     ("other", "other/app", True), ("off", "owner/off", False))]
+                     ("other", "other/app", True), ("off", "owner/off", False),
+                     ("phish-in", "mkny13/couch-tour", True),
+                     ("hockey", "mkny13/hockey-draft-copilot", True))]
         self.assertEqual(referenced_items(
             "app#5 owner/app#5 OWNER/APP#5 other/app#6 off#2 mahler#1 "
             "unknown#3 prefix/owner/app#7 owner/app#8suffix", "mahler", projects),
             [("app", 5), ("other", 6)])
+        self.assertEqual(referenced_items("phish-in#842", "mahler", projects),
+                         [("phish-in", 842)])
+        self.assertEqual(referenced_items("hockey#123", "mahler", projects),
+                         [("hockey", 123)])
+        self.assertEqual(referenced_items("couch-tour#842 mkny13/couch-tour#842", "mahler", projects),
+                         [("phish-in", 842)])
+        self.assertEqual(
+            [dependency_target(d, "mahler", projects) for d in depends_of("Depends on: phish-in#842, hockey#123")],
+            [("phish-in", 842), ("hockey", 123)])
+        ambiguous = projects + [{"name": "couch-tour", "repo": "other/something", "enabled": True}]
+        self.assertIsNone(dependency_target({"repo": "couch-tour", "number": 842}, "mahler", ambiguous))
+        self.assertEqual(referenced_items("couch-tour#842", "mahler", ambiguous), [])
 
 
 if __name__ == "__main__":
