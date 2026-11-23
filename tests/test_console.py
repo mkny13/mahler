@@ -3887,6 +3887,33 @@ class DiscussionBrowserTests(unittest.TestCase):
             self.assertIn('Headless Chrome startup failed after 2 attempts', str(cm.exception))
             self.assertIn('fatal startup error', str(cm.exception))
 
+    def test_chrome_startup_helper_times_out_when_port_never_published(self):
+        import sys
+        if os.name != 'posix':
+            self.skipTest('process-group helper requires POSIX')
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = Path(tmp, 'dummy_chrome.py')
+            script = (
+                f"#!{sys.executable}\n"
+                "import sys, time\n"
+                "sys.stderr.write('alive but never published a port')\n"
+                "sys.stderr.flush()\n"
+                "time.sleep(30)\n"
+            )
+            script_path.write_text(script)
+            script_path.chmod(0o755)
+            with self.assertRaises(unittest.SkipTest) as cm:
+                with self._launch_chrome_devtools(
+                        str(script_path), tmp, 390, timeout=0.3, poll_interval=0.01):
+                    pass
+            message = str(cm.exception)
+            self.assertIn('Headless Chrome startup failed after 2 attempts', message)
+            self.assertIn('did not publish DevToolsActivePort within', message)
+            self.assertNotIn('Chrome exited before opening DevTools', message)
+            self.assertIn('alive but never published a port', message)
+            self.assertTrue(Path(tmp, 'profile-390-1').is_dir())
+            self.assertTrue(Path(tmp, 'profile-390-2').is_dir())
+
     def test_chrome_startup_helper_propagates_journey_assertion_failure(self):
         import subprocess, sys
         if os.name != 'posix':
