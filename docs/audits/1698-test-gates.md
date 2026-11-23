@@ -153,3 +153,30 @@ Invocation: `python3 tests/run_random.py [seed] [--start-directory DIR]`
 1. **`assertFalse` Diagnostic Arguments:** `test_suite_hygiene.py` checks `assertTrue` second arguments to avoid `assertTrue(a, b)`, but `assertFalse` second arguments can also be misused. A future enhancement could check that `assertFalse(a, b)` second arguments are string literals, f-strings, or explicit `msg=` keywords.
 2. **`setUp` / `tearDown` Cleanup Migration:** Tests using `mock.patch.object(...).start()` in `setUp()` and `.stop()` in `tearDown()` should migrate to `self.addCleanup(patcher.stop)` to guarantee teardown even if `setUp()` raises midway.
 3. **SQLite Explicit Connection Management:** Ensure helper routines creating local `Ledger` instances register `addCleanup(led.close)` to avoid depending on garbage collector finalization.
+
+## Local Verification (2026-11-23)
+
+Checks used Python 3.14.10 with a temporary `HOME`, Mahler state and runs
+directories, GitHub configuration, and `TMPDIR`, with no inherited credentials.
+Wall times include process startup. The first two suites ran before the
+temporary-home correction in `tests/test_copilot_auth.py` was loaded.
+
+| Command | Result | Tests | Wall time |
+| :--- | :--- | ---: | ---: |
+| `python3 -m mahler.repo_guard` | pass | n/a | 0.14 s |
+| `python3 -m unittest discover -s tests` | 1 failure, 2 errors, 2 skipped | 3925 | 510.95 s |
+| `python3 -m unittest discover -s tests` (after home fix) | 2 errors, 2 skipped | 3925 | 341.69 s |
+| `python3 tests/run_random.py` | 1 failure, 2 errors, 2 skipped | 3925 | 508.17 s |
+| `python3 -X dev tests/run_strict.py` | 2 errors, 2 skipped | 3925 | 349.42 s |
+
+The failure was an existing Copilot auth fixture clearing `HOME` and falling
+back to the real user's home; its fixture now uses a temporary home. The
+20-test `test_copilot_auth.py` suite passed after that correction. The random
+runner's seed was not retained by the output-filtering wrapper.
+
+The remaining errors were both widths of the existing headless browser journey:
+local Chrome 157 timed out navigating to the loopback HTTP fixture. An
+independent DevTools probe navigated to a `data:` URL but also timed out on a
+local HTTP URL. The browser test is unchanged by this PR; this is outstanding
+local browser coverage, not a pass. The eight runner gate self-tests passed,
+including the new poisoned-parent-environment test for both runners.
