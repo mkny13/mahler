@@ -3,6 +3,7 @@ __pycache__/
 .DS_Store
 *.orig
 /.test-results.log
+/.audit-*.log
 /patch_*.py
 /scratch*
 /test_run.py
