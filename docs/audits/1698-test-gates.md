@@ -101,5 +101,21 @@ GitHub/AWS credentials, and an unrelated sentinel do not cross the boundary.
 
 ## Repository verification
 
-Final command results, test counts, durations, and any failures are recorded
-here after all four repository gates run against the committed implementation.
+Measured locally on 2026-11-23 with Python 3.14.10 at base commit
+`c3d93bea9602acdb2ea4adc70a6ddd63ea9518d3` for follow-up #1713.
+Durations below are elapsed wall time for the entire command, including startup.
+
+| Command | Tests run | Duration | Failures / errors | Exit status | Result |
+| --- | ---: | ---: | --- | ---: | --- |
+| `python3 -m mahler.repo_guard` | N/A (repository scan) | 0.042 s | 0 violations | 0 | PASS |
+| `python3 -m unittest discover -s tests` | 3,933 | 347.884 s | 0 / 0 | 0 | OK (2 skipped) |
+
+The standard runner reported 346.598 s for test execution alone.
+Randomized and strict gate results are pending.
+
+Historical evidence from the admitted #1713 issue context: review run 15297
+reported that PR #1712 CI passed all four gates with a 3,933-test suite at
+reviewed head `c17b72c84d6ecd2e8ffb9726dddf5d67ab6a1742`. That earlier CI
+observation is separate from the local measurements above. The same context
+mentions an unrelated Chrome failure and rerun during the original audit;
+it supplies no exact duration or failure details for that attempt.
