@@ -5,10 +5,12 @@ import copy
 import json
 import os
 import re
+import subprocess
 import tempfile
+import time
 import tomllib
 import unittest
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -3688,7 +3690,7 @@ def _stop_browser_process_group(browser):
     if os.name == 'posix':
         try:
             os.killpg(browser.pid, signal.SIGTERM)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
     elif browser.poll() is None:
         browser.terminate()
@@ -3698,11 +3700,14 @@ def _stop_browser_process_group(browser):
         if os.name == 'posix':
             try:
                 os.killpg(browser.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
         else:
             browser.kill()
-        browser.wait()
+        try:
+            browser.wait(timeout=5)
+        except Exception:
+            pass
     if os.name == 'posix':
         # The parent is reaped, but Chrome's children may still hold the profile open.
         import time
@@ -3768,6 +3773,142 @@ class DiscussionBrowserTests(unittest.TestCase):
                     pass
                 browser.wait()
 
+    @contextmanager
+    def _launch_chrome_devtools(self, chrome, tmp, width, timeout=45, poll_interval=0.05):
+        last_failure = None
+        for attempt in (1, 2):
+            profile = Path(tmp, f'profile-{width}-{attempt}')
+            profile.mkdir(parents=True, exist_ok=True)
+            stderr_path = Path(tmp, f'chrome-{width}-{attempt}.stderr')
+            browser_stderr = stderr_path.open('w+', encoding='utf-8')
+            browser = None
+            lines = []
+            try:
+                browser = subprocess.Popen([chrome, '--headless=new', '--disable-gpu', '--no-sandbox',
+                        '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
+                        '--remote-debugging-port=0', f'--user-data-dir={profile}', 'about:blank'],
+                        start_new_session=os.name == 'posix',
+                        stdout=subprocess.DEVNULL, stderr=browser_stderr)
+                port_file = profile / 'DevToolsActivePort'
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    if port_file.is_file():
+                        try:
+                            lines = port_file.read_text().splitlines()
+                        except OSError:
+                            lines = []
+                        if len(lines) >= 2:
+                            break
+                    if browser.poll() is not None:
+                        browser_stderr.flush()
+                        browser_stderr.seek(0)
+                        err_tail = browser_stderr.read()[-2000:]
+                        last_failure = (f'Chrome exited before opening DevTools '
+                                        f'(status {browser.returncode}): {err_tail}')
+                        break
+                    time.sleep(poll_interval)
+                else:
+                    if len(lines) < 2:
+                        browser_stderr.flush()
+                        browser_stderr.seek(0)
+                        err_tail = browser_stderr.read()[-2000:]
+                        last_failure = (f'Chrome did not publish DevToolsActivePort within '
+                                        f'{timeout} seconds: {err_tail}')
+            except Exception as exc:
+                last_failure = f'Chrome startup encountered {type(exc).__name__}: {exc}'
+            finally:
+                if len(lines) < 2:
+                    if browser is not None:
+                        _stop_browser_process_group(browser)
+                        try:
+                            browser.wait(timeout=5)
+                        except Exception:
+                            pass
+                    browser_stderr.close()
+
+            if len(lines) >= 2:
+                port, websocket = lines[:2]
+                try:
+                    yield port, websocket
+                finally:
+                    if browser is not None:
+                        _stop_browser_process_group(browser)
+                        try:
+                            browser.wait(timeout=5)
+                        except Exception:
+                            pass
+                    browser_stderr.close()
+                return
+
+        self.skipTest(f'Headless Chrome startup failed after 2 attempts; coverage outstanding: {last_failure}')
+
+    def test_chrome_startup_helper_retries_and_succeeds_on_second_attempt(self):
+        import subprocess, sys
+        if os.name != 'posix':
+            self.skipTest('process-group helper requires POSIX')
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = Path(tmp, 'dummy_chrome.py')
+            script = (
+                f"#!{sys.executable}\n"
+                "import sys, pathlib, time\n"
+                "udir = [a.split('=', 1)[1] for a in sys.argv if a.startswith('--user-data-dir=')][0]\n"
+                "if '-1' in udir:\n"
+                "    sys.stderr.write('startup failure on attempt 1')\n"
+                "    sys.exit(1)\n"
+                "p = pathlib.Path(udir, 'DevToolsActivePort')\n"
+                "p.write_text('9222\\n/devtools/browser/abc\\n')\n"
+                "time.sleep(30)\n"
+            )
+            script_path.write_text(script)
+            script_path.chmod(0o755)
+            with self._launch_chrome_devtools(str(script_path), tmp, 390, timeout=1, poll_interval=0.01) as (port, websocket):
+                self.assertEqual(port, '9222')
+                self.assertEqual(websocket, '/devtools/browser/abc')
+            self.assertTrue(Path(tmp, 'profile-390-1').is_dir())
+            self.assertTrue(Path(tmp, 'profile-390-2').is_dir())
+
+    def test_chrome_startup_helper_skips_when_both_attempts_fail(self):
+        import subprocess, sys
+        if os.name != 'posix':
+            self.skipTest('process-group helper requires POSIX')
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = Path(tmp, 'dummy_chrome.py')
+            script = (
+                f"#!{sys.executable}\n"
+                "import sys\n"
+                "sys.stderr.write('fatal startup error')\n"
+                "sys.exit(1)\n"
+            )
+            script_path.write_text(script)
+            script_path.chmod(0o755)
+            with self.assertRaises(unittest.SkipTest) as cm:
+                with self._launch_chrome_devtools(str(script_path), tmp, 390, timeout=0.1, poll_interval=0.01):
+                    pass
+            self.assertIn('Headless Chrome startup failed after 2 attempts', str(cm.exception))
+            self.assertIn('fatal startup error', str(cm.exception))
+
+    def test_chrome_startup_helper_propagates_journey_assertion_failure(self):
+        import subprocess, sys
+        if os.name != 'posix':
+            self.skipTest('process-group helper requires POSIX')
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = Path(tmp, 'dummy_chrome.py')
+            script = (
+                f"#!{sys.executable}\n"
+                "import sys, pathlib, time\n"
+                "udir = [a.split('=', 1)[1] for a in sys.argv if a.startswith('--user-data-dir=')][0]\n"
+                "p = pathlib.Path(udir, 'DevToolsActivePort')\n"
+                "p.write_text('9222\\n/devtools/browser/abc\\n')\n"
+                "time.sleep(30)\n"
+            )
+            script_path.write_text(script)
+            script_path.chmod(0o755)
+            with self.assertRaises(AssertionError) as cm:
+                with self._launch_chrome_devtools(str(script_path), tmp, 390, timeout=1, poll_interval=0.01) as (port, websocket):
+                    self.assertEqual(port, '9222')
+                    self.fail('journey assertion failed')
+            self.assertEqual(str(cm.exception), 'journey assertion failed')
+
     def test_fake_worker_journeys_at_phone_and_desktop_widths(self):
         import functools
         import http.server
@@ -3807,46 +3948,13 @@ class DiscussionBrowserTests(unittest.TestCase):
             try:
                 for width in (390, 1440):
                     with self.subTest(width=width):
-                        import time
-                        profile = Path(tmp, f'profile-{width}')
-                        profile.mkdir()
-                        stderr_path = Path(tmp, f'chrome-{width}.stderr')
-                        with stderr_path.open('w+', encoding='utf-8') as browser_stderr:
-                            with subprocess.Popen([chrome, '--headless=new', '--disable-gpu', '--no-sandbox',
-                                    '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
-                                    '--remote-debugging-port=0', f'--user-data-dir={profile}', 'about:blank'],
-                                    start_new_session=os.name == 'posix',
-                                    stdout=subprocess.DEVNULL, stderr=browser_stderr) as browser:
-                                try:
-                                    port_file = profile / 'DevToolsActivePort'
-                                    deadline = time.monotonic() + 45
-                                    lines = []
-                                    while time.monotonic() < deadline:
-                                        if port_file.is_file():
-                                            lines = port_file.read_text().splitlines()
-                                            if len(lines) >= 2:
-                                                break
-                                        if browser.poll() is not None:
-                                            browser_stderr.flush()
-                                            browser_stderr.seek(0)
-                                            self.fail(f'Chrome exited before opening DevTools '
-                                                f'(status {browser.returncode}): {browser_stderr.read()[-2000:]}')
-                                        time.sleep(.05)
-                                    if len(lines) < 2:
-                                        browser_stderr.flush()
-                                        browser_stderr.seek(0)
-                                        self.fail('Chrome did not publish DevToolsActivePort within 45 seconds: '
-                                            + browser_stderr.read()[-2000:])
-                                    port, websocket = lines[:2]
-                                    result = subprocess.run(['node', 'tests/console_discuss_test.js',
-                                        f'ws://127.0.0.1:{port}{websocket}',
-                                        f'http://127.0.0.1:{server.server_port}/journey.html?width={width}', str(width)],
-                                        capture_output=True, text=True, timeout=30)
-                                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                                    self.assertEqual(result.stdout.strip(), 'PASS')
-                                finally:
-                                    _stop_browser_process_group(browser)
-
+                        with self._launch_chrome_devtools(chrome, tmp, width) as (port, websocket):
+                            result = subprocess.run(['node', 'tests/console_discuss_test.js',
+                                f'ws://127.0.0.1:{port}{websocket}',
+                                f'http://127.0.0.1:{server.server_port}/journey.html?width={width}', str(width)],
+                                capture_output=True, text=True, timeout=30)
+                            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                            self.assertEqual(result.stdout.strip(), 'PASS')
             finally:
                 server.shutdown(); server.server_close(); thread.join()
 

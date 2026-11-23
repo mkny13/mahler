@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -1339,6 +1340,89 @@ class ShipTests(unittest.TestCase):
             self.assertTrue(json.loads(self.led.get_kv(key))["done"])
             self.ship()
             self.gh.rerun_failed_jobs.assert_called_once_with(10)
+
+    def test_ci_rerun_fix_run_blocked_ci_retry_lifecycle(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.required_checks = {"checks"}
+        self.gh.rollup = [{"name": "checks", "conclusion": "FAILURE",
+                          "detailsUrl": "https://github.com/o/r/actions/runs/10/job/100"}]
+        self.gh.base_checks = lambda b: [{"name": "checks", "conclusion": "SUCCESS"}]
+        client = gh_module.GH("o/r")
+        failed = {"id": 10, "head_sha": "abc123", "workflow_id": 8,
+                  "run_attempt": 1, "status": "completed", "conclusion": "failure"}
+        def reply(method, path, payload=None):
+            if path.startswith("actions/runs?head_sha=abc123"):
+                return {"total_count": 1, "workflow_runs": [failed]}
+            if path.startswith("actions/runs?head_sha=tip"):
+                return {"total_count": 0, "workflow_runs": []}
+            return {"total_count": 1, "jobs": [
+                {"name": "checks", "conclusion": "failure"}]}
+        self.gh.ci_retry_runs = client.ci_retry_runs
+        self.gh.rerun_failed_jobs = mock.Mock()
+        self.gh.actions_run = mock.Mock(return_value=dict(failed))
+        fix_id = None
+        def launch(ctx, project, item, role, platform, **kwargs):
+            nonlocal fix_id
+            fix_id = self.led.create_run(project=project, number=5, role=role,
+                                         platform=platform, epoch=1, status="running")
+            self.led.claim(project, item["number"], f"run:{fix_id}", "auto", 30,
+                           platform=platform, run_id=fix_id)
+            self.led.set_state(project, item["number"], "working")
+            return True
+        key = "ci-rerun:x#5:88:abc123"
+        with mock.patch.object(client, "_api_json", side_effect=reply), \
+                mock.patch.object(client, "branch_sha", return_value="tip"), \
+                mock.patch.object(ship, "start", side_effect=launch):
+            self.ship()
+            self.gh.rerun_failed_jobs.assert_called_once_with(10)
+            self.gh.actions_run.return_value.update(run_attempt=2, status="completed", conclusion="failure")
+            self.ship()
+            self.assertEqual(self.item()["attempts"], 1)
+            self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+
+            fix_run = self.led.run(fix_id)
+            log_path = Path(self.tmp, "fix.log")
+            log_path.write_text("STATUS: BLOCKED CI-RETRY flake during startup\n")
+            self.led.update_run(fix_run["id"], log_path=str(log_path))
+            fix_run = dict(self.led.run(fix_id))
+            fix_run["worktree"] = self.tmp
+
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                    mock.patch.object(runner, "git", side_effect=lambda wt, *args, **kw: "" if args[:1] == ("status",) else "abc123"), \
+                    mock.patch.object(runner, "snapshot", return_value={"ref": "mahler/snapshot/5-run1", "sha": "abc123", "ahead": 0, "stat": ""}), \
+                    mock.patch.object(runner, "remove_worktree"):
+                finalize.finalize(self.ctx, fix_run)
+
+            self.assertEqual(self.item()["attempts"], 0)
+            self.assertEqual(self.item()["state"], "verifying")
+            rec = json.loads(self.led.get_kv(key))
+            self.assertEqual(rec["fix_run"], fix_run["id"])
+            self.assertFalse(rec.get("done"))
+
+            self.gh.rerun_failed_jobs.reset_mock()
+            self.ship()
+            self.gh.rerun_failed_jobs.assert_called_once_with(10)
+
+            # Rerun completes red, so next tick starts a second fix run (attempt 1)
+            self.gh.actions_run.return_value.update(run_attempt=3, status="completed", conclusion="failure")
+            self.ship()
+            self.assertEqual(self.item()["attempts"], 1)
+            self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+
+            fix_run2 = dict(self.led.run(fix_id))
+            log_path.write_text("STATUS: BLOCKED CI-RETRY second flake\n")
+            self.led.update_run(fix_run2["id"], log_path=str(log_path))
+            fix_run2 = dict(self.led.run(fix_id))
+            fix_run2["worktree"] = self.tmp
+
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                    mock.patch.object(runner, "git", side_effect=lambda wt, *args, **kw: "" if args[:1] == ("status",) else "abc123"), \
+                    mock.patch.object(runner, "snapshot", return_value={"ref": "mahler/snapshot/5-run2", "sha": "abc123", "ahead": 0, "stat": ""}), \
+                    mock.patch.object(runner, "remove_worktree"):
+                finalize.finalize(self.ctx, fix_run2)
+
+            # Second BLOCKED CI-RETRY on same head is rejected, attempt 2 is charged
+            self.assertEqual(self.item()["attempts"], 2)
 
     def test_unchanged_head_at_attempt_limit_reruns_with_sibling_workflow(self):
         # A no-change build (or /mahler go) returns the same red head to shipping.

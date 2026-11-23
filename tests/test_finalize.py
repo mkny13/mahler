@@ -200,6 +200,46 @@ class RunTests(unittest.TestCase):
                     self.assertIsNone(finalize._prepare_ci_retry(e))
                 self.led.set_kv(key, None)
 
+    def test_ci_retry_accepts_and_refunds_when_prefix_ci_rerun_record_completed(self):
+        key = self.ci_retry_fixture()
+        self.led.set_kv(key, json.dumps({
+            "runs": [{"id": 10, "attempt": 1}],
+            "since": iso(NOW),
+            "done": True,
+        }))
+        self.gh.base_checks = mock.Mock(return_value=[{"name": "checks", "conclusion": "SUCCESS"}])
+        with mock.patch.object(runner, "git", side_effect=[self.gh.head, ""]):
+            self.finalize()
+        self.assertEqual((self.led.item("x", 5)["state"], self.led.item("x", 5)["attempts"],
+                          self.led.item("x", 5)["esc_fails"]), ("verifying", 0, 0))
+        record = json.loads(self.led.get_kv(key))
+        self.assertEqual(record["fix_run"], self.run_id)
+        self.assertFalse(record.get("done"))
+
+    def test_ci_retry_rejects_when_base_branch_not_green_or_second_fix_run(self):
+        for case in ("base_red", "base_pending", "second_fix_run"):
+            with self.subTest(case=case):
+                key = self.ci_retry_fixture()
+                if case == "base_red":
+                    self.gh.base_checks = mock.Mock(return_value=[{"name": "checks", "conclusion": "FAILURE"}])
+                elif case == "base_pending":
+                    self.gh.base_checks = mock.Mock(return_value=[{"name": "checks", "status": "IN_PROGRESS"}])
+                elif case == "second_fix_run":
+                    self.led.set_kv(key, json.dumps({
+                        "runs": [{"id": 10, "attempt": 1}],
+                        "since": iso(NOW),
+                        "done": True,
+                        "fix_run": 999,
+                    }))
+                    self.gh.base_checks = mock.Mock(return_value=[{"name": "checks", "conclusion": "SUCCESS"}])
+                item = self.led.item("x", 5)
+                e = finalize.Ending(self.ctx, self.run, item, self.ctx.policy("x"), {}, "cline",
+                    "BLOCKED", "CI-RETRY fd flake", self.run["stop_reason"], "BLOCKED")
+                with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                        mock.patch.object(runner, "git", side_effect=[self.gh.head, ""]):
+                    self.assertIsNone(finalize._prepare_ci_retry(e))
+                self.led.set_kv(key, None)
+
     def test_ci_retry_fence_after_evidence_prevents_refund(self):
         key = self.ci_retry_fixture()
         def snapshot(*args, **kwargs):

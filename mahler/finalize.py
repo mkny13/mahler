@@ -13,7 +13,7 @@ import time
 from datetime import timedelta
 
 from . import ci_blockers, cline_free, config, desktop, failures, no_change, platforms, prompt, review, router, runner, waits
-from .gh import GHError
+from .gh import GHError, checks_state
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import quota_peers, record_claude_usage
 
@@ -1169,6 +1169,25 @@ def _mark_stale(e):
             "preserved_state": e.led.item(e.project, e.number)["state"]})
 
 
+def _ci_rerun_spent(raw):
+    """True if a ci-rerun record is spent for BLOCKED CI-RETRY."""
+    if not raw:
+        return False
+    try:
+        record = json.loads(raw)
+    except (ValueError, TypeError):
+        return True
+    if not isinstance(record, dict):
+        return True
+    if record.get("fix_run"):
+        return True
+    if not record.get("done"):
+        return True
+    if "runs" not in record:
+        return True
+    return False
+
+
 def _prepare_ci_retry(e):
     if (e.stale or e.reason or e.run["role"] != "fix" or e.verb != "BLOCKED"
             or not e.rest.startswith("CI-RETRY ") or not e.rest[9:].strip()):
@@ -1186,7 +1205,8 @@ def _prepare_ci_retry(e):
             or set(attribution.get("after", {})) != counters):
         return None
     key = f"ci-rerun:{e.project}#{e.number}:{pr}:{sha}"
-    if (not latest or latest["id"] != e.run["id"] or led.get_kv(key)
+    if (not latest or latest["id"] != e.run["id"]
+            or _ci_rerun_spent(led.get_kv(key))
             or not led.get_kv(cycle) or not led.get_kv(f"{cycle}:charged")
             or any(e.item[k] != v for k, v in attribution["after"].items())):
         return None
@@ -1197,7 +1217,12 @@ def _prepare_ci_retry(e):
                 or runner.git(e.run["worktree"], "rev-parse", "HEAD") != sha
                 or runner.git(e.run["worktree"], "status", "--porcelain", "--untracked-files=all")):
             return None
-        runs = gh.ci_retry_runs(sha, view.get("baseRefName"), reported=True)
+        base = view.get("baseRefName") or e.pol.get("base", "main")
+        if hasattr(gh, "base_checks"):
+            required = set(gh.required_status_checks(base) or ()) if hasattr(gh, "required_status_checks") else None
+            if checks_state(gh.base_checks(base), required=required or None) != "green":
+                return None
+        runs = gh.ci_retry_runs(sha, base, reported=True)
         if not runs:
             return None
         return key, attribution, runs
@@ -1209,7 +1234,8 @@ def _apply_ci_retry(e, prepared):
     key, attribution, runs = prepared
     led = e.led
     current = led.item(e.project, e.number)
-    if (led.get_kv(key) or any(current[k] != v for k, v in attribution["after"].items())):
+    if (_ci_rerun_spent(led.get_kv(key))
+            or any(current[k] != v for k, v in attribution["after"].items())):
         _retry(e)
         return
     led.set_kv(key, json.dumps({"runs": runs, "since": iso(led.now()), "fix_run": e.run["id"]}))
