@@ -110,11 +110,15 @@ Durations below are elapsed wall time for the entire command, including startup.
 | `python3 -m mahler.repo_guard` | N/A (repository scan) | 0.042 s | 0 violations | 0 | PASS |
 | `python3 -m unittest discover -s tests` | 3,933 | 347.884 s | 0 / 0 | 0 | OK (2 skipped) |
 | `python3 tests/run_random.py` | 3,933 | 342.083 s | 0 / 0 | 0 | OK (2 skipped) |
+| `python3 -X dev tests/run_strict.py` | 3,933 | 347.616 s | 0 / 0 | 0 | OK (2 skipped) |
 
 The standard runner reported 346.598 s for test execution alone; the randomized
 runner reported 341.292 s. Randomized seed: `943269447`; reproduce with
 `python3 tests/run_random.py 943269447`.
-Strict gate results are pending.
+The strict runner reported 347.266 s for test execution alone. All four local
+commands passed on their first attempt; each suite reported two skipped tests,
+which are not counted as passes. The repository guard is a scan, so it has no
+unittest count.
 
 Historical evidence from the admitted #1713 issue context: review run 15297
 reported that PR #1712 CI passed all four gates with a 3,933-test suite at
