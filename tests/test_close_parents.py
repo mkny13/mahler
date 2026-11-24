@@ -1081,6 +1081,34 @@ class ParentEvidenceTests(unittest.TestCase):
         self.assertIn("- [x] Docs updated for v2", self.bodies[10])
         self.assertIn("- [ ] Smoke passes", self.bodies[10])
 
+    def test_parent_1698_full_resolution(self):
+        self.led.set_kv(sync.evidence_key("mahler", 20, 41), None)
+        criterion_1698 = (
+            "Verification evidence identifies commands, revision, outcomes and limitations; "
+            "no live-compatibility claim is inferred from synthetic fixtures. "
+            "Parent verification's final response ends with `PARENT-EVIDENCE:` followed by "
+            "one `- met|unmet | criterion | evidence` line for each of these four criteria "
+            "and `END-PARENT-EVIDENCE`."
+        )
+        self.bodies[10] = (
+            "## Done when\n"
+            "- [x] #1699 is merged\n"
+            "- [x] #1700 is merged\n"
+            "- [x] #1701 is merged\n"
+            f"- [ ] {criterion_1698}\n"
+        )
+        evidence_text = (
+            "PARENT-EVIDENCE:\n"
+            f"- met | {criterion_1698} | Verified at clean revision d76c7fad. Commands exit 0.\n"
+            "END-PARENT-EVIDENCE"
+        )
+        entries = sync.parse_parent_evidence(evidence_text)
+        self.record(47, entries)
+        self.run_pass()
+        self.assertIn(f"- [x] {criterion_1698}", self.bodies[10])
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+        self.gh.create_issue.assert_not_called()
+
 
 class SyncStoresParentTests(unittest.TestCase):
     def setUp(self):

@@ -9,6 +9,7 @@ import json
 import hashlib
 import re
 import uuid
+import difflib
 from datetime import timedelta
 
 from . import ci_blockers, config, no_change, releases, waits
@@ -1024,7 +1025,7 @@ EVIDENCE_CONTRACT = (
     "A DONE without a well-formed block is retried. Do not comment on or edit any issue — "
     "the conductor posts the block on the parent, ticks the checkboxes of met criteria and "
     "files one follow-up issue per unmet criterion. Identify any owner-only decision.")
-_EVIDENCE_LINE = re.compile(r"[-*+]\s*(met|unmet)\s*\|\s*([^|]*?)\s*\|\s*(.*?)\s*", re.I)
+_EVIDENCE_LINE = re.compile(r"[-*+]\s*(met|unmet)\s*\|\s*(.*\S)\s*\|\s*(.*?)\s*", re.I)
 
 
 def parse_parent_evidence(text):
@@ -1047,7 +1048,7 @@ def parse_parent_evidence(text):
         m = _EVIDENCE_LINE.fullmatch(line)
         if not m or not m[2] or not m[3]:
             raise ValueError(f"malformed evidence line: {line[:120]}")
-        entries.append({"met": m[1].lower() == "met", "criterion": m[2], "evidence": m[3]})
+        entries.append({"met": m[1].lower() == "met", "criterion": m[2].strip(), "evidence": m[3].strip()})
     else:
         raise ValueError(f"evidence block has no {EVIDENCE_END} line")
     if not entries:
@@ -1072,7 +1073,25 @@ def evidence_key(project, verify_number, run_id):
 
 def _criterion_norm(text):
     text = re.sub(r"^(?:unchecked criterion:\s*)", "", text.strip(), flags=re.I)
-    return " ".join(text.strip("`*_ ").split()).casefold()
+    text = text.replace("`", "")
+    text = re.sub(r"[|\-\u2010-\u2015]", " ", text)
+    return " ".join(text.strip("*_ ").split()).casefold()
+
+
+def _fuzzy_prefix_matches(entry_norm, crit_norm):
+    if not entry_norm or not crit_norm:
+        return False
+    entry_refs = set(re.findall(r"#\d+", entry_norm))
+    crit_refs = set(re.findall(r"#\d+", crit_norm))
+    if entry_refs and crit_refs and entry_refs != crit_refs:
+        return False
+    if crit_norm.startswith(entry_norm) or entry_norm.startswith(crit_norm):
+        return True
+    if len(entry_norm) >= 6 and (entry_norm in crit_norm or crit_norm in entry_norm):
+        return True
+    if difflib.SequenceMatcher(None, entry_norm, crit_norm).ratio() >= 0.8:
+        return True
+    return False
 
 
 def post_parent_evidence(ctx, projects):
@@ -1117,17 +1136,36 @@ def _apply_parent_evidence(ctx, project, record):
     entries = record["entries"]
     body = gh.issue_body(parent)
     lines = body.splitlines(keepends=True)
-    by_text = {_criterion_norm(check[2]): (index, check) for index, check, _ in _parent_checks(body)}
+    checks = _parent_checks(body)
+    by_text = {_criterion_norm(check[2]): (index, check) for index, check, _ in checks}
     ticked, unmatched = [], []
+    matched = set()
+    unresolved_entries = []
     for entry in entries:
         if not entry["met"]:
             continue
-        found = by_text.get(_criterion_norm(entry["criterion"]))
-        if not found:
-            unmatched.append(entry["criterion"])
-        elif found[1][1] == " ":
+        norm = _criterion_norm(entry["criterion"])
+        found = by_text.get(norm)
+        if found:
+            matched.add(found[0])
+            if found[1][1] == " ":
+                lines[found[0]] = lines[found[0]].replace("[ ]", "[x]", 1)
+                ticked.append(entry["criterion"])
+        else:
+            unresolved_entries.append((entry, norm))
+    for entry, norm in unresolved_entries:
+        candidates = [
+            (idx, check) for idx, check, _ in checks
+            if idx not in matched and check[1] == " "
+            and _fuzzy_prefix_matches(norm, _criterion_norm(check[2]))
+        ]
+        if len(candidates) == 1:
+            found = candidates[0]
+            matched.add(found[0])
             lines[found[0]] = lines[found[0]].replace("[ ]", "[x]", 1)
             ticked.append(entry["criterion"])
+        else:
+            unmatched.append(entry["criterion"])
     if ticked:
         gh.edit_issue_body(parent, "".join(lines))
     policy = ctx.policy(project)
