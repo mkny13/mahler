@@ -7580,6 +7580,18 @@ class TestShip(unittest.TestCase):
         self.assertIn("git revert --no-edit 1111111111111111111111111111111111111111..2222222222222222222222222222222222222222", c)
         self.assertIn("/mahler park", c)
 
+    def test_fix_push_comment_deduped(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run1")
+        self.gh.existing_pr = 88
+        self.gh.head_sha = "1111111111111111111111111111111111111111"
+        rid = self.led.create_run(project="x", number=5, role="fix", platform="claude", epoch=1)
+        self.led.update_run(rid, status="ended", outcome="DONE fix the broken check")
+        with mock.patch.object(self.gh, "push_branch", return_value="2222222222222222222222222222222222222222"):
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                ship._open_pr(self.ctx, "x", self.item(), self.gh, self.cfg["projects"]["x"])
+                ship._open_pr(self.ctx, "x", self.item(), self.gh, self.cfg["projects"]["x"])
+        self.assertEqual(len(self.gh.comments), 1)
+
     def test_fix_push_comment_not_posted_without_push(self):
         self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run1")
         self.gh.existing_pr = 88

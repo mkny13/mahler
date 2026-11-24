@@ -257,6 +257,9 @@ def sync(ctx, project):
             _note_source_reopen(ctx, project, item)
             _adopt_label_edits(ctx, project, item, labels)
         _process_comments(ctx, project, led.item(project, n), iss.get("comments") or [])
+        item_now = led.item(project, n)
+        if item_now and item_now["pr"]:
+            _process_pr_comments(ctx, project, item_now)
 
     for item in led.items(project):
         if item["number"] in open_nums or item["state"] in ("done", "shipped"):
@@ -762,6 +765,50 @@ def _process_comments(ctx, project, item, comments):
         led.upsert_item(project, item["number"], last_comment_at=iso(newest))
 
 
+def _process_pr_comments(ctx, project, item):
+    pr = item["pr"]
+    if not pr:
+        return
+    led = ctx.led
+    cursor_key = f"pr-last-comment:{project}#{pr}"
+    seen_val = led.get_kv(cursor_key)
+    seen = parse(seen_val) if seen_val else None
+    try:
+        comments = ctx.gh(project).issue_comments(pr)
+    except GHError as e:
+        ctx.say(f"{project}#{item['number']}: error reading PR #{pr} comments — {e}")
+        return
+
+    if not isinstance(comments, (list, tuple)):
+        return
+
+    newest = seen
+    for c in sorted(comments, key=lambda c: c["createdAt"]):
+        at = parse(c["createdAt"])
+        if seen and at <= seen:
+            continue
+        newest = at if newest is None or at > newest else newest
+        body = c.get("body") or ""
+        if body.lstrip().startswith(AGENT_MARK):
+            continue
+        cmd = parse_command(body)
+        if not cmd:
+            continue
+
+        owner = ctx.policy(project)["repo"].split("/", 1)[0]
+        login = (c.get("author") or {}).get("login", "")
+        association = c.get("authorAssociation") or ""
+        is_owner = (association == "OWNER" or (isinstance(login, str) and login.casefold() == owner.casefold()))
+        if not is_owner:
+            continue
+
+        _apply_instruction(ctx, project, led.item(project, item["number"]), *cmd,
+                           is_owner=is_owner)
+
+    if newest and newest != seen:
+        led.set_kv(cursor_key, iso(newest))
+
+
 def resume_item(led, project, number, why="you said go"):
     """Apply the same reset as ``/mahler go`` to a waiting item."""
     waits.clear(led, project, number)
@@ -777,6 +824,8 @@ def resume_item(led, project, number, why="you said go"):
 
 def _apply_instruction(ctx, project, item, verb, arg, *, is_owner=False):
     led, n = ctx.led, item["number"]
+    if verb == "stop":
+        verb = "park"
     if verb == "go":
         resume_item(led, project, n)
     elif verb == "park":

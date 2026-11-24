@@ -1249,6 +1249,19 @@ class GH:
         log = self._gh("run", "view", str(run_id), "-R", self.repo, "--log-failed", timeout=90)
         return run_id, "\n".join(log.splitlines()[-tail:])
 
+    def diff_files(self, path, old_head, new_head):
+        """Names of files touched between old_head and new_head."""
+        try:
+            out = self._git(path, "diff", "--name-only", f"{old_head}..{new_head}")
+            return [f.strip() for f in out.splitlines() if f.strip()]
+        except Exception:
+            try:
+                self._git(path, "fetch", "--quiet", "--no-tags", "origin", old_head)
+                out = self._git(path, "diff", "--name-only", f"{old_head}..{new_head}")
+                return [f.strip() for f in out.splitlines() if f.strip()]
+            except Exception:
+                return []
+
     def pr_ci_toolchain_files(self, number):
         """Changed PR paths that can alter CI or its toolchain."""
         out = self._gh("pr", "diff", str(number), "-R", self.repo, "--name-only")
@@ -1552,7 +1565,7 @@ def has_sections(body, *headings):
 
 
 
-COMMAND_RE = re.compile(r"^\s*/mahler\s+(go|park|platform)\b\s*(\S*)", re.IGNORECASE | re.MULTILINE)
+COMMAND_RE = re.compile(r"^\s*/mahler\s+(go|park|platform|stop)\b\s*(\S*)", re.IGNORECASE | re.MULTILINE)
 
 
 def parse_command(body):

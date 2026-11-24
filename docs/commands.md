@@ -11,8 +11,8 @@ Drop these commands as a comment on an issue to instruct the conductor. They tak
 - `/mahler go`
   Moves a parked or failed issue to `ready`. The conductor will pick it up and assign it to an agent based on quota availability.
 
-- `/mahler park`
-  Pauses work on an issue. Moves it to `parked`. Agents working on it will be interrupted. Useful when you want Mahler to ignore an issue for now.
+- `/mahler park` (alias: `/mahler stop`)
+  Pauses work on an issue. Moves it to `parked`. Agents working on it will be interrupted. Useful when you want Mahler to ignore an issue for now. Can also be commented on an open PR to stop active runs and park the item.
 
 - `/mahler platform <name>`
   Forces Mahler to use a specific agent platform (e.g., `agy-gemini`, `claude`, `codex`, `copilot`) for the next run. This adds a `platform:<name>` label. This overrides the automatic quota-based routing.

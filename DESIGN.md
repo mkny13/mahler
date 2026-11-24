@@ -706,7 +706,8 @@ doesn't rely on that and stops on its own thresholds regardless.
   a guarantee that arbitrary personal text is safe to send. The POC uses ntfy.sh with
   an unguessable topic; self-hosting on the Mac mini is an option later.
 - **GitHub comments are commands**, which is handy from the GitHub app:
-  - `/mahler go` · `/mahler park` · `/mahler platform <name|auto>`
+  - `/mahler go` · `/mahler park` (alias: `/mahler stop`) · `/mahler platform <name|auto>`
+  - Commands from the owner are also accepted on open pull requests (e.g. `/mahler park` or `/mahler stop` interrupts active runs and parks the item); plain non-command PR comments are ignored and never resume an item.
   - Any reply on a `needs-you` item is taken as the answer.
 
 #### Shipment evidence and optional failure reports (mahler#741, #749–#751)
@@ -1435,6 +1436,7 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
   the PR with `Fixes #N`, the agent's summary and the issue's "Needs a human to check" list.
   It watches CI across ticks, checks the lease, squash-merges, deletes the branch and comments
   on the issue. These steps need no model, cost no tokens and can't be forgotten.
+- **Fix-push comment on the PR.** When the conductor pushes a fix run's commits to an existing PR, it leaves a comment explaining the fix run, its platform, what triggered it (the failing check name, review findings, or merge conflicts), the run's one-line STATUS summary, the commit range pushed and files touched, and the exact `git revert --no-edit <old head>..<new head>` command to undo it if needed, noting that `/mahler park` or `/mahler stop` halts further runs.
 - **Not more agents.** A separate "PR agent" would be the same failure mode aimed at work
   that needs no judgment.
 - **A missing STATUS line isn't the end of the story.** If the branch has commits ahead of
