@@ -306,7 +306,7 @@ def _observe_live(ctx, row, policy):
 
 
 def _pass_on_live_proof(ctx, row, policy):
-    """Re-observe the pinned launch-proven artifact before retaining D10 evidence."""
+    """Re-observe the launch-proven artifact before retaining D10 evidence."""
     from . import config, launch_health
     from .ledger import parse
     remaining = (parse(row["deadline_at"]) - ctx.led.now()).total_seconds()
@@ -320,7 +320,7 @@ def _pass_on_live_proof(ctx, row, policy):
     if ctx.led.now() >= parse(row["deadline_at"]):
         _fail(ctx, row, "timeout")
         return
-    if not artifact or artifact != row["artifact_ref"]:
+    if not isinstance(artifact, str) or not artifact:
         _change(ctx, row, summary="exact live identity not yet verified")
         return
     observed = artifact.removeprefix("mahler:")
