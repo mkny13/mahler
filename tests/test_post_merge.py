@@ -596,6 +596,29 @@ class PostMergeTests(unittest.TestCase):
     def test_mahler_descendant_report_and_single_delivery_after_restart(self):
         self.assert_mahler_report_and_delivery("b" * 40, "descendant")
 
+    def test_mahler_smoke_passes_when_daemon_advances_to_descendant(self):
+        descendant = "b" * 40
+        self.mahler_smoke(SHA)
+        self.assertEqual(self.row()["artifact_ref"], "mahler:" + SHA)
+        self.restart()
+        with (
+            mock.patch("mahler.launch_health.exact_live",
+                       return_value="mahler:" + descendant) as observe,
+            mock.patch.object(post_merge.subprocess, "Popen") as launch,
+        ):
+            self.tick()
+        observe.assert_called_once_with(SHA, timeout=5, env=None)
+        launch.assert_not_called()
+        row = self.row()
+        self.assertEqual(row["status"], "PASS")
+        self.assertFalse(row["failure_code"])
+        self.assertEqual(row["artifact_ref"], "mahler:" + SHA)
+        self.assertEqual(row["summary"], "Descendant live identity PASS (mahler self-host)")
+        report = Path(row["evidence_ref"])
+        self.assertEqual(report.read_bytes(),
+            f"Tag: {row['tag']}\nMerge: {SHA}\nLive: {descendant}\n"
+            f"Identity: descendant\nSmoke: PASS\n".encode())
+
     def assert_mahler_report_and_delivery(self, live, identity):
         self.mahler_smoke(live)
         self.restart()
@@ -638,7 +661,7 @@ class PostMergeTests(unittest.TestCase):
             mock.patch("mahler.launch_health.exact_live") as observe,
             mock.patch.object(post_merge.subprocess, "Popen") as launch,
         ):
-            for result in (None, "mahler:" + "b" * 40, RuntimeError("private output")):
+            for result in (None, RuntimeError("private output")):
                 observe.side_effect = result if isinstance(result, Exception) else None
                 observe.return_value = result
                 self.restart()
