@@ -622,3 +622,33 @@ class PRCommentTests(unittest.TestCase):
         self.assertEqual(self.led.item('x', 1)['state'], 'working')
         self.assertTrue(any("error reading PR #42 comments" in line for line in self.ctx.lines))
 
+    def test_full_sync_retries_pr_comments_after_transient_read_failure(self):
+        self.cfg["projects"]["x"]["scope"] = "all"
+        self.led.set_kv("depends_format:x", "4")
+        self.led.set_kv("unmerged_reconciled:x", "1")
+        self.led.set_kv("release_baseline_checked:x", "1")
+        self.led.upsert_item("x", 1, state="working", pr=42)
+        run_id = self.led.create_run(project="x", number=1, role="fix",
+                                     platform="claude", epoch=1, status="running")
+        issue = {
+            "number": 1, "title": "Fix", "body": "",
+            "createdAt": iso(self.led.now()), "labels": [], "comments": [],
+            "authorAssociation": "OWNER", "authorLogin": "owner",
+        }
+        self.gh.issues_changed.side_effect = (
+            lambda etag: (False, etag) if etag else (True, "collection-etag"))
+        self.gh.open_issues.return_value = [issue]
+        self.gh.issue_comments.side_effect = [
+            GHError("api 500"),
+            [{"createdAt": "2026-11-23T20:00:00Z", "body": "/mahler stop",
+              "author": {"login": "owner"}, "authorAssociation": "OWNER"}],
+        ]
+
+        sync.sync(self.ctx, "x")
+        self.assertEqual(self.led.get_kv("etag:x"), "")
+        sync.sync(self.ctx, "x")
+
+        self.assertEqual(self.gh.issue_comments.call_count, 2)
+        self.assertEqual(self.led.item("x", 1)["state"], "parked")
+        self.assertEqual(self.led.run(run_id)["stop_reason"], "parked")
+

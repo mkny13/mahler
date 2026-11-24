@@ -259,7 +259,11 @@ def sync(ctx, project):
         _process_comments(ctx, project, led.item(project, n), iss.get("comments") or [])
         item_now = led.item(project, n)
         if item_now and item_now["pr"]:
-            _process_pr_comments(ctx, project, item_now)
+            if not _process_pr_comments(ctx, project, item_now):
+                # The PR's comments aren't covered by the issues collection
+                # ETag. Force a fresh collection poll so this command is retried.
+                led.set_kv(etag_key, "")
+                poll_etag = None
 
     for item in led.items(project):
         if item["number"] in open_nums or item["state"] in ("done", "shipped"):
@@ -768,7 +772,7 @@ def _process_comments(ctx, project, item, comments):
 def _process_pr_comments(ctx, project, item):
     pr = item["pr"]
     if not pr:
-        return
+        return True
     led = ctx.led
     cursor_key = f"pr-last-comment:{project}#{pr}"
     seen_val = led.get_kv(cursor_key)
@@ -777,10 +781,10 @@ def _process_pr_comments(ctx, project, item):
         comments = ctx.gh(project).issue_comments(pr)
     except GHError as e:
         ctx.say(f"{project}#{item['number']}: error reading PR #{pr} comments — {e}")
-        return
+        return False
 
     if not isinstance(comments, (list, tuple)):
-        return
+        return False
 
     newest = seen
     for c in sorted(comments, key=lambda c: c["createdAt"]):
@@ -807,6 +811,7 @@ def _process_pr_comments(ctx, project, item):
 
     if newest and newest != seen:
         led.set_kv(cursor_key, iso(newest))
+    return True
 
 
 def resume_item(led, project, number, why="you said go"):
