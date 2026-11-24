@@ -1081,6 +1081,41 @@ class ParentEvidenceTests(unittest.TestCase):
         self.assertIn("- [x] Docs updated for v2", self.bodies[10])
         self.assertIn("- [ ] Smoke passes", self.bodies[10])
 
+    def test_ambiguity_preserved_across_checked_criteria_and_unmet_never_ticked(self):
+        # mahler#1724 review regression: with v2 already checked and v3 unchecked,
+        # met evidence for v2 and unmet evidence for v3 must not tick v3.
+        self.led.set_kv(sync.evidence_key("mahler", 20, 41), None)
+        self.bodies[10] = "## Done when\n- [x] Docs updated for v2\n- [ ] Docs updated for v3\n"
+        evidence_text = (
+            "PARENT-EVIDENCE:\n"
+            "- met | Docs updated for v2. | README verified\n"
+            "- unmet | Docs updated for v3 | Still missing\n"
+            "END-PARENT-EVIDENCE"
+        )
+        entries = sync.parse_parent_evidence(evidence_text)
+        self.record(48, entries)
+        self.post()
+        self.assertIn("- [x] Docs updated for v2", self.bodies[10])
+        self.assertIn("- [ ] Docs updated for v3", self.bodies[10])
+        self.assertEqual(self.gh.create_issue.call_count, 1)
+
+    def test_ambiguous_prefix_across_checked_and_unchecked_ticks_nothing(self):
+        # mahler#1724: "Docs updated" matches both checked v2 and unchecked v3, so it is ambiguous
+        self.led.set_kv(sync.evidence_key("mahler", 20, 41), None)
+        self.bodies[10] = "## Done when\n- [x] Docs updated for v2\n- [ ] Docs updated for v3\n"
+        evidence_text = (
+            "PARENT-EVIDENCE:\n"
+            "- met | Docs updated | README verified\n"
+            "- unmet | Docs updated for v3 | Still missing\n"
+            "END-PARENT-EVIDENCE"
+        )
+        entries = sync.parse_parent_evidence(evidence_text)
+        self.record(49, entries)
+        self.post()
+        self.assertIn("- [x] Docs updated for v2", self.bodies[10])
+        self.assertIn("- [ ] Docs updated for v3", self.bodies[10])
+        self.assertEqual(self.gh.create_issue.call_count, 1)
+
     def test_parent_1698_full_resolution(self):
         self.led.set_kv(sync.evidence_key("mahler", 20, 41), None)
         criterion_1698 = (
