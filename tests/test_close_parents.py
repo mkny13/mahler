@@ -1002,6 +1002,85 @@ class ParentEvidenceTests(unittest.TestCase):
                             if line.startswith(("PARENT", "- ", "END")))
         self.assertEqual([e["met"] for e in sync.parse_parent_evidence(example)], [True, False])
 
+    def test_criterion_containing_pipes_parses_and_ticks(self):
+        # mahler#1724: parent #1698 criterion contains pipe characters
+        self.led.set_kv(sync.evidence_key("mahler", 20, 41), None)
+        criterion_1698 = (
+            "Verification evidence identifies commands, revision, outcomes and limitations; "
+            "no live-compatibility claim is inferred from synthetic fixtures. "
+            "Parent verification's final response ends with `PARENT-EVIDENCE:` followed by "
+            "one `- met|unmet | criterion | evidence` line for each of these four criteria "
+            "and `END-PARENT-EVIDENCE`."
+        )
+        self.bodies[10] = f"## Done when\n- [ ] {criterion_1698}\n"
+        evidence_text = (
+            "PARENT-EVIDENCE:\n"
+            f"- met | {criterion_1698} | Verified at clean revision d76c7fad6cbd. Commands exit 0.\n"
+            "END-PARENT-EVIDENCE"
+        )
+        entries = sync.parse_parent_evidence(evidence_text)
+        self.assertEqual(entries[0]["criterion"], criterion_1698)
+        self.record(43, entries)
+        self.post()
+        self.assertIn(f"- [x] {criterion_1698}", self.bodies[10])
+
+    def test_criterion_with_rewritten_punctuation_normalises_and_ticks(self):
+        self.led.set_kv(sync.evidence_key("mahler", 20, 41), None)
+        criterion = (
+            "Verification evidence identifies commands, revision, outcomes and limitations; "
+            "no live-compatibility claim is inferred from synthetic fixtures. "
+            "Parent verification's final response ends with `PARENT-EVIDENCE:` followed by "
+            "one `- met|unmet | criterion | evidence` line for each of these four criteria "
+            "and `END-PARENT-EVIDENCE`."
+        )
+        self.bodies[10] = f"## Done when\n- [ ] {criterion}\n"
+        # Rewritten: swapped met|unmet for met — unmet to keep line parseable
+        evidence_text = (
+            "PARENT-EVIDENCE:\n"
+            "- met | Verification evidence identifies commands, revision, outcomes and limitations; "
+            "no live-compatibility claim is inferred from synthetic fixtures. "
+            "Parent verification's final response ends with `PARENT-EVIDENCE:` followed by "
+            "one `- met — unmet — criterion — evidence` line for each of these four criteria "
+            "and `END-PARENT-EVIDENCE`. | Verified commands.\n"
+            "END-PARENT-EVIDENCE"
+        )
+        entries = sync.parse_parent_evidence(evidence_text)
+        self.record(44, entries)
+        self.post()
+        self.assertIn(f"- [x] {criterion}", self.bodies[10])
+
+    def test_ambiguous_prefix_match_ticks_nothing(self):
+        # mahler#1724: two candidates matching prefix/fuzzy must tick nothing
+        self.led.set_kv(sync.evidence_key("mahler", 20, 41), None)
+        self.bodies[10] = "## Done when\n- [ ] Docs updated for v2\n- [ ] Docs updated for v3\n"
+        evidence_text = (
+            "PARENT-EVIDENCE:\n"
+            "- met | Docs updated | Verified in PR #1\n"
+            "END-PARENT-EVIDENCE"
+        )
+        entries = sync.parse_parent_evidence(evidence_text)
+        self.record(45, entries)
+        self.post()
+        self.assertIn("- [ ] Docs updated for v2", self.bodies[10])
+        self.assertIn("- [ ] Docs updated for v3", self.bodies[10])
+        self.assertNotIn("- [x]", self.bodies[10])
+        [comment] = self.evidence_comments()
+        self.assertIn("Met but not on the checklist (nothing ticked): Docs updated", comment["body"])
+
+    def test_unique_prefix_match_ticks_unmatched_criterion(self):
+        self.led.set_kv(sync.evidence_key("mahler", 20, 41), None)
+        self.bodies[10] = "## Done when\n- [ ] Docs updated for v2\n- [ ] Smoke passes\n"
+        evidence_text = (
+            "PARENT-EVIDENCE:\n"
+            "- met | Docs updated | Verified in PR #1\n"
+            "END-PARENT-EVIDENCE"
+        )
+        entries = sync.parse_parent_evidence(evidence_text)
+        self.record(46, entries)
+        self.post()
+        self.assertIn("- [x] Docs updated for v2", self.bodies[10])
+        self.assertIn("- [ ] Smoke passes", self.bodies[10])
+
 
 class SyncStoresParentTests(unittest.TestCase):
     def setUp(self):
