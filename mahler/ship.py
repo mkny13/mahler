@@ -11,10 +11,10 @@ import json
 import re
 from datetime import timedelta
 
-from . import waits, dependency_vetting, capacity, ci_blockers, config, failures, no_change, platforms, review, router, runner, screenshot_delivery, screenshots
+from . import redact, waits, dependency_vetting, capacity, ci_blockers, config, failures, no_change, platforms, review, router, runner, screenshot_delivery, screenshots
 from .finalize import CAPACITY_STOPS, retry_or_fail
 from . import gh as gh_module
-from .gh import GHError, checks_state, needs_human_of, non_required_failures, pr_body, pr_summary_of
+from .gh import GHError, checks_state, failing_checks, needs_human_of, non_required_failures, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .tick import busy_platforms, start
 
@@ -2726,6 +2726,10 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
         led.upsert_item(project, n, attempts=attempts)
         led.set_kv(f"{key}:charged", "1")
         _record_fix_charge(led, project, n, key, before)
+        fix_run = led.last_run(project, n, roles=("fix",))
+        if fix_run:
+            trigger = "merge conflicts" if base_conflict else "review findings"
+            led.set_kv(f"fix-trigger:{fix_run['id']}", trigger)
         if design_plan:
             design_key = f"design:{project}#{n}:{pr}:{sha}"
             rec = _kv_json(led, design_key)
@@ -3129,6 +3133,9 @@ def _red_ci(ctx, project, item, pr, view):
         led.set_kv(f"{key}:charged", "1")
         launched = led.last_run(project, n, roles=("fix",))
         if launched:
+            failing = failing_checks(view.get("statusCheckRollup"))
+            trigger = ", ".join(failing) if failing else "failing checks"
+            led.set_kv(f"fix-trigger:{launched['id']}", trigger)
             led.set_kv(f"ci-fix:{launched['id']}", json.dumps({
                 "cycle": key, "pr": pr, "sha": view.get("headRefOid"),
                 "before": _kv_json(led, f"{key}:before"),
@@ -3293,6 +3300,57 @@ def _record_fix_charge(led, project, n, cycle, before):
             "after": {k: led.item(project, n)[k] for k in ("attempts", "esc_tier", "esc_fails")}}))
 
 
+def _post_fix_push_comment(ctx, project, n, pr, repo_path, gh, run, old_head, new_head):
+    """Post an explanation on the PR after pushing fix commits (DESIGN D18)."""
+    led = ctx.led
+    dedupe_key = f"fix-comment:{project}#{pr}:{old_head}:{new_head}"
+    if led.get_kv(dedupe_key):
+        return
+    try:
+        platform = row_get(run, "platform", "agent")
+        run_id = row_get(run, "id")
+        trigger = led.get_kv(f"fix-trigger:{run_id}")
+        if not trigger:
+            if led.get_kv(f"ci-fix:{run_id}"):
+                trigger = "CI failure"
+            elif led.get_kv(f"review:{project}#{n}"):
+                trigger = "review findings"
+            else:
+                trigger = "CI or review failure"
+        outcome = row_get(run, "outcome", "")
+        if outcome.startswith("DONE "):
+            summary = outcome[5:].strip()
+        elif outcome == "DONE":
+            summary = "completed fix"
+        else:
+            summary = outcome or "completed fix"
+
+        files = []
+        if hasattr(gh, "diff_files"):
+            files = gh.diff_files(repo_path, old_head, new_head)
+        if files:
+            if len(files) <= 5:
+                files_desc = ", ".join(f"`{f}`" for f in files)
+            else:
+                files_desc = f"{len(files)} files: {', '.join(f'`{f}`' for f in files[:5])}, ..."
+        else:
+            files_desc = "none"
+
+        revert_cmd = f"git revert --no-edit {old_head}..{new_head}"
+        body = (
+            f"**Fix run** by **{platform}** (triggered by {trigger}):\n"
+            f"- **Summary:** {summary}\n"
+            f"- **Pushed commits:** `{old_head}..{new_head}` ({files_desc})\n"
+            f"- **To undo:** `{revert_cmd}`\n"
+            "- To stop further runs: comment `/mahler park` or `/mahler stop` on this PR."
+        )
+        body = redact.redact(body)
+        gh.comment(pr, body)
+        led.set_kv(dedupe_key, "1")
+    except Exception as e:
+        ctx.say(f"{project}#{n}: couldn't post fix-push comment on PR #{pr} — {e}")
+
+
 def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
     led, n = ctx.led, item["number"]
     ref = item["branch"]
@@ -3320,6 +3378,7 @@ def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
         branch = f"mahler/{n}-{runner.slug(item['title'])}"
 
     try:
+        old_head = existing_view.get("headRefOid") if existing_view else None
         sha = gh.push_branch(pol["path"], branch, ref)   # the branch, pushed if needed
         pr = gh.pr_for_head(branch)
         created = False
@@ -3328,6 +3387,11 @@ def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
             pr = gh.pr_create(branch, base, item["title"],
                               pr_body(n, item["summary"], needs, unconfirmed=unconfirmed))
             created = True
+        elif existing_view and old_head and sha and sha != old_head:
+            last_run = led.last_run(project, n, roles=("build", "fix"))
+            if (last_run and row_get(last_run, "role") == "fix"
+                    and row_get(last_run, "outcome", "").startswith("DONE")):
+                _post_fix_push_comment(ctx, project, n, pr, pol["path"], gh, last_run, old_head, sha)
     except (GHError, ValueError) as e:
         if isinstance(e, GHError) and _missing_remote_ref(e, ref):
             led.set_kv(f"ship_snapshot:{project}#{n}", None)

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from mahler import config, scheduler, sync
+from mahler.gh import GHError, parse_command
 from mahler.ledger import Ledger, iso
 
 
@@ -526,3 +527,128 @@ class DiscussionContextTests(unittest.TestCase):
             {'createdAt': '2026-10-19T00:00:00Z', 'body': 'Relevant <text>', 'author': {'login': 'x'}},
             {'createdAt': '2026-10-20T00:00:00Z', 'body': '<!-- mahler:agent -->\nLatest blocker'}])
         self.assertEqual(led.get_kv('console-comment:x#1'), '<!-- mahler:agent -->\nLatest blocker')
+
+
+class PRCommentTests(unittest.TestCase):
+    def setUp(self):
+        self.led = Ledger(':memory:')
+        self.addCleanup(self.led.close)
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg['projects']['x'] = {'repo': 'owner/repo', 'path': '.'}
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.gh = mock.MagicMock()
+        self.ctx.gh = lambda project: self.gh
+
+    def test_parse_command_stop(self):
+        self.assertEqual(parse_command("/mahler stop"), ("stop", None))
+        self.assertEqual(parse_command("  /mahler stop  "), ("stop", None))
+        self.assertEqual(parse_command("/mahler stop now"), ("stop", "now"))
+
+    def test_apply_instruction_stop(self):
+        self.led.upsert_item('x', 1, state='working')
+        run_id = self.led.create_run(project='x', number=1, role='build', platform='claude', epoch=1, status='running')
+        sync._apply_instruction(self.ctx, 'x', self.led.item('x', 1), 'stop', None, is_owner=True)
+        self.assertEqual(self.led.item('x', 1)['state'], 'parked')
+        self.assertEqual(self.led.run(run_id)['stop_reason'], 'parked')
+
+    def test_pr_comment_stop_and_park_by_owner(self):
+        self.led.upsert_item('x', 1, state='working', pr=42)
+        run_id = self.led.create_run(project='x', number=1, role='fix', platform='claude', epoch=1, status='running')
+        self.gh.issue_comments.return_value = [
+            {'createdAt': '2026-11-23T20:00:00Z', 'body': '/mahler stop',
+             'author': {'login': 'owner'}, 'authorAssociation': 'OWNER'}
+        ]
+        sync._process_pr_comments(self.ctx, 'x', self.led.item('x', 1))
+        self.assertEqual(self.led.item('x', 1)['state'], 'parked')
+        self.assertEqual(self.led.run(run_id)['stop_reason'], 'parked')
+        self.assertEqual(self.led.get_kv('pr-last-comment:x#42'), '2026-11-23T20:00:00+00:00')
+
+    def test_pr_comment_park_by_owner(self):
+        self.led.upsert_item('x', 1, state='working', pr=42)
+        run_id = self.led.create_run(project='x', number=1, role='fix', platform='claude', epoch=1, status='running')
+        self.gh.issue_comments.return_value = [
+            {'createdAt': '2026-11-23T20:00:00Z', 'body': '/mahler park',
+             'author': {'login': 'owner'}, 'authorAssociation': 'OWNER'}
+        ]
+        sync._process_pr_comments(self.ctx, 'x', self.led.item('x', 1))
+        self.assertEqual(self.led.item('x', 1)['state'], 'parked')
+        self.assertEqual(self.led.run(run_id)['stop_reason'], 'parked')
+
+    def test_pr_comment_by_non_owner_ignored(self):
+        self.led.upsert_item('x', 1, state='working', pr=42)
+        run_id = self.led.create_run(project='x', number=1, role='fix', platform='claude', epoch=1, status='running')
+        self.gh.issue_comments.return_value = [
+            {'createdAt': '2026-11-23T20:00:00Z', 'body': '/mahler stop',
+             'author': {'login': 'attacker'}, 'authorAssociation': 'CONTRIBUTOR'}
+        ]
+        sync._process_pr_comments(self.ctx, 'x', self.led.item('x', 1))
+        self.assertEqual(self.led.item('x', 1)['state'], 'working')
+        self.assertIsNone(self.led.run(run_id)['stop_reason'])
+
+    def test_pr_comment_plain_does_not_resume_failed(self):
+        self.led.upsert_item('x', 1, state='failed', pr=42)
+        self.gh.issue_comments.return_value = [
+            {'createdAt': '2026-11-23T20:00:00Z', 'body': 'I fixed the issue on main',
+             'author': {'login': 'owner'}, 'authorAssociation': 'OWNER'}
+        ]
+        sync._process_pr_comments(self.ctx, 'x', self.led.item('x', 1))
+        self.assertEqual(self.led.item('x', 1)['state'], 'failed')
+
+    def test_pr_comment_cursor_no_replay(self):
+        self.led.upsert_item('x', 1, state='working', pr=42)
+        self.led.set_kv('pr-last-comment:x#42', '2026-11-23T20:00:00+00:00')
+        self.gh.issue_comments.return_value = [
+            {'createdAt': '2026-11-23T19:59:00Z', 'body': '/mahler park',
+             'author': {'login': 'owner'}, 'authorAssociation': 'OWNER'},
+            {'createdAt': '2026-11-23T20:00:00Z', 'body': '/mahler park',
+             'author': {'login': 'owner'}, 'authorAssociation': 'OWNER'},
+        ]
+        sync._process_pr_comments(self.ctx, 'x', self.led.item('x', 1))
+        self.assertEqual(self.led.item('x', 1)['state'], 'working')
+
+    def test_pr_comment_skips_agent_comments(self):
+        self.led.upsert_item('x', 1, state='working', pr=42)
+        self.gh.issue_comments.return_value = [
+            {'createdAt': '2026-11-23T20:00:00Z', 'body': '<!-- mahler:agent -->\n/mahler park',
+             'author': {'login': 'owner'}, 'authorAssociation': 'OWNER'}
+        ]
+        sync._process_pr_comments(self.ctx, 'x', self.led.item('x', 1))
+        self.assertEqual(self.led.item('x', 1)['state'], 'working')
+
+    def test_pr_comment_gh_error_is_exception_safe(self):
+        self.led.upsert_item('x', 1, state='working', pr=42)
+        self.gh.issue_comments.side_effect = GHError("api 500")
+        sync._process_pr_comments(self.ctx, 'x', self.led.item('x', 1))
+        self.assertEqual(self.led.item('x', 1)['state'], 'working')
+        self.assertTrue(any("error reading PR #42 comments" in line for line in self.ctx.lines))
+
+    def test_full_sync_retries_pr_comments_after_transient_read_failure(self):
+        self.cfg["projects"]["x"]["scope"] = "all"
+        self.led.set_kv("depends_format:x", "4")
+        self.led.set_kv("unmerged_reconciled:x", "1")
+        self.led.set_kv("release_baseline_checked:x", "1")
+        self.led.upsert_item("x", 1, state="working", pr=42)
+        run_id = self.led.create_run(project="x", number=1, role="fix",
+                                     platform="claude", epoch=1, status="running")
+        issue = {
+            "number": 1, "title": "Fix", "body": "",
+            "createdAt": iso(self.led.now()), "labels": [], "comments": [],
+            "authorAssociation": "OWNER", "authorLogin": "owner",
+        }
+        self.gh.issues_changed.side_effect = (
+            lambda etag: (False, etag) if etag else (True, "collection-etag"))
+        self.gh.open_issues.return_value = [issue]
+        self.gh.issue_comments.side_effect = [
+            GHError("api 500"),
+            [{"createdAt": "2026-11-23T20:00:00Z", "body": "/mahler stop",
+              "author": {"login": "owner"}, "authorAssociation": "OWNER"}],
+        ]
+
+        sync.sync(self.ctx, "x")
+        self.assertEqual(self.led.get_kv("etag:x"), "")
+        sync.sync(self.ctx, "x")
+
+        self.assertEqual(self.gh.issue_comments.call_count, 2)
+        self.assertEqual(self.led.item("x", 1)["state"], "parked")
+        self.assertEqual(self.led.run(run_id)["stop_reason"], "parked")
+

@@ -114,6 +114,11 @@ class FakeGH:
             return "x = f'{token}'"
         return self.sources.get((sha, file, line))
 
+    diff_files_result = ["file1.py", "file2.py"]
+
+    def diff_files(self, path, old_head, new_head):
+        return getattr(self, "diff_files_result", ["file1.py", "file2.py"])
+
     def comment(self, number, body):
         if not body.startswith(gh_module.AGENT_MARK):
             body = gh_module.AGENT_NOTE + "\n" + body
@@ -7552,3 +7557,73 @@ class TestShip(unittest.TestCase):
         self.assertIsNone(self.led.get_kv("reviewfix:x#5:88:abc123:run"))
         self.same_head_gate()
         self.assertEqual(self.same_head_calls[-1][0], "review")
+
+    def test_fix_push_comment_posted_on_push_to_existing_pr(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run1")
+        self.gh.existing_pr = 88
+        self.gh.head_sha = "1111111111111111111111111111111111111111"
+        rid = self.led.create_run(project="x", number=5, role="fix", platform="claude", epoch=1)
+        self.led.update_run(rid, status="ended", outcome="DONE fix the broken check")
+        self.led.set_kv(f"fix-trigger:{rid}", "test_foo (failure)")
+        with mock.patch.object(self.gh, "push_branch", return_value="2222222222222222222222222222222222222222"):
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                ship._open_pr(self.ctx, "x", self.item(), self.gh, self.cfg["projects"]["x"])
+        self.assertEqual(len(self.gh.comments), 1)
+        c = self.gh.comments[0]
+        self.assertTrue(c.startswith(gh_module.AGENT_MARK))
+        self.assertIn("Fix run", c)
+        self.assertIn("claude", c)
+        self.assertIn("test_foo (failure)", c)
+        self.assertIn("fix the broken check", c)
+        self.assertIn("1111111111111111111111111111111111111111..2222222222222222222222222222222222222222", c)
+        self.assertIn("file1.py", c)
+        self.assertIn("git revert --no-edit 1111111111111111111111111111111111111111..2222222222222222222222222222222222222222", c)
+        self.assertIn("/mahler park", c)
+
+    def test_fix_push_comment_deduped(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run1")
+        self.gh.existing_pr = 88
+        self.gh.head_sha = "1111111111111111111111111111111111111111"
+        rid = self.led.create_run(project="x", number=5, role="fix", platform="claude", epoch=1)
+        self.led.update_run(rid, status="ended", outcome="DONE fix the broken check")
+        with mock.patch.object(self.gh, "push_branch", return_value="2222222222222222222222222222222222222222"):
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                ship._open_pr(self.ctx, "x", self.item(), self.gh, self.cfg["projects"]["x"])
+                ship._open_pr(self.ctx, "x", self.item(), self.gh, self.cfg["projects"]["x"])
+        self.assertEqual(len(self.gh.comments), 1)
+
+    def test_fix_push_comment_not_posted_without_push(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run1")
+        self.gh.existing_pr = 88
+        self.gh.head_sha = "1111111111111111111111111111111111111111"
+        rid = self.led.create_run(project="x", number=5, role="fix", platform="claude", epoch=1)
+        self.led.update_run(rid, status="ended", outcome="DONE fix the broken check")
+        with mock.patch.object(self.gh, "push_branch", return_value="1111111111111111111111111111111111111111"):
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                ship._open_pr(self.ctx, "x", self.item(), self.gh, self.cfg["projects"]["x"])
+        self.assertEqual(len(self.gh.comments), 0)
+
+    def test_fix_push_comment_not_posted_for_build_run(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run1")
+        self.gh.existing_pr = 88
+        self.gh.head_sha = "1111111111111111111111111111111111111111"
+        rid = self.led.create_run(project="x", number=5, role="build", platform="claude", epoch=1)
+        self.led.update_run(rid, status="ended", outcome="DONE implement feature")
+        with mock.patch.object(self.gh, "push_branch", return_value="2222222222222222222222222222222222222222"):
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                ship._open_pr(self.ctx, "x", self.item(), self.gh, self.cfg["projects"]["x"])
+        self.assertEqual(len(self.gh.comments), 0)
+
+    def test_fix_push_comment_posting_failure_is_harmless(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run1")
+        self.gh.existing_pr = 88
+        self.gh.head_sha = "1111111111111111111111111111111111111111"
+        rid = self.led.create_run(project="x", number=5, role="fix", platform="claude", epoch=1)
+        self.led.update_run(rid, status="ended", outcome="DONE fix the broken check")
+        with mock.patch.object(self.gh, "push_branch", return_value="2222222222222222222222222222222222222222"), \
+                mock.patch.object(self.gh, "comment", side_effect=gh_module.GHError("comment api error")):
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                ship._open_pr(self.ctx, "x", self.item(), self.gh, self.cfg["projects"]["x"])
+        self.assertTrue(any("couldn't post fix-push comment on PR #88" in line for line in self.ctx.lines))
+        self.assertEqual(self.item()["pr"], 88)
+
