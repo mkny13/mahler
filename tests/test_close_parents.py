@@ -988,6 +988,43 @@ class ParentEvidenceTests(unittest.TestCase):
         self.assertEqual(self.led.item("mahler", 10)["state"], "done")
         self.gh.create_issue.assert_not_called()
 
+    def test_unmatched_met_evidence_retries_until_it_matches(self):
+        self.record(41, [{"met": True, "criterion": "Docs updated", "evidence": "verified"}])
+        self.bodies[10] = "## Done when\n- [ ] Docs updated for v2\n- [ ] Docs updated for v3\n"
+        self.post()
+        key = sync.evidence_key("mahler", 20, 41)
+        self.assertFalse(json.loads(self.led.get_kv(key))["done"])
+        self.post()
+        self.assertNotIn("[x]", self.bodies[10])
+        self.assertEqual(len(self.evidence_comments()), 1)
+        self.bodies[10] = "## Done when\n- [ ] Docs updated for v2\n"
+        self.run_pass()
+        self.assertIn("[x] Docs updated for v2", self.bodies[10])
+        self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+        self.assertEqual(len(self.evidence_comments()), 1)
+
+    def test_legacy_done_record_replays_and_closes_parent_once(self):
+        criterion = "Evidence includes `met|unmet | criterion | evidence`"
+        self.bodies[10] = f"## Done when\n- [ ] {criterion}\n"
+        self.record(41, [{"met": True, "criterion": "Evidence includes `met",
+                          "evidence": "unmet | criterion | evidence` | verified"}])
+        key = sync.evidence_key("mahler", 20, 41)
+        record = json.loads(self.led.get_kv(key))
+        record["done"] = True  # old parser truncated the criterion at its first pipe
+        self.led.set_kv(key, json.dumps(record))
+        self.comments[10] = [{"body": "<!-- mahler:parent-evidence:10:41 -->\n"
+                             "Met but not on the checklist (nothing ticked): Evidence includes `met"}]
+        self.run_pass()
+        self.assertIn(f"[x] {criterion}", self.bodies[10])
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+        self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+        self.gh.issue_body.reset_mock()
+        self.post()
+        self.gh.issue_body.assert_not_called()
+        self.assertEqual(len(self.evidence_comments()), 1)
+        self.gh.create_issue.assert_not_called()
+
     def test_parse_rejects_missing_and_malformed_blocks(self):
         for text in ("STATUS: DONE no block",
                      "PARENT-EVIDENCE:\n- met | Docs updated | ok\nSTATUS: DONE",
