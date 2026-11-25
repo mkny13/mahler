@@ -680,6 +680,50 @@ class PostMergeTests(unittest.TestCase):
         self.assertFalse(self.led.q(
             "SELECT * FROM kv WHERE key LIKE 'post-merge-evidence:%'"))
 
+    def test_mahler_smoke_self_update_defers_and_passes_after_restart(self):
+        app, older_sha, merge_sha = self._setup_app_git()
+        (Path(config.STATE) / "launch_ok").write_text(older_sha)
+        # Model a persisted smoke row with the original 1800-second budget.
+        self.register(sha=merge_sha)
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="mahler", live_command="")
+        self.tick()
+        self.led.update_post_merge_check(
+            "p", 1, merge_sha, expected_phase="live", phase="smoke",
+            live_sha=merge_sha, artifact_ref="mahler:" + merge_sha)
+        for seconds in (1799, 1800, 1801, 2400):
+            self.now = NOW + timedelta(seconds=seconds)
+            self.restart()
+            self.tick()
+            row = self.row(sha=merge_sha)
+            self.assertEqual((row["status"], row["phase"]), ("pending", "smoke"))
+            self.assertEqual(row["summary"], "awaiting daemon self-update")
+            self.assertFalse(row["failure_code"])
+            self.assertFalse(row["evidence_ref"])
+        self.gh.create_issue.assert_not_called()
+        subprocess.run(["git", "checkout", "-q", "--detach", merge_sha],
+                       cwd=app, check=True)
+        (Path(config.STATE) / "launch_ok").write_text(merge_sha)
+        self.restart()
+        self.tick()
+        self.assertEqual(self.row(sha=merge_sha)["status"], "PASS")
+
+    @mock.patch("mahler.notify.send")
+    def test_mahler_smoke_self_update_has_fixed_hard_ceiling(self, ping):
+        self.mahler_smoke(SHA)
+        with mock.patch("mahler.launch_health.exact_live",
+                        return_value=launch_health.AWAITING_SELF_UPDATE) as observe:
+            for seconds in (1801, 3599):
+                self.now = NOW + timedelta(seconds=seconds)
+                self.tick()
+                self.assertEqual(self.row()["status"], "pending")
+            self.restart()
+            self.now = NOW + 2 * launch_health.CANARY_INTERVAL
+            self.tick()
+        self.assertEqual(observe.call_count, 3)
+        self.assertEqual(self.row()["status"], "FAIL")
+        self.assertEqual(self.row()["failure_code"], "awaiting_self_update")
+
     def test_mahler_smoke_observation_cannot_pass_after_deadline(self):
         self.mahler_smoke(SHA)
         from mahler.ledger import parse
