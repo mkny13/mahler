@@ -83,6 +83,28 @@ def scorecard_rows(cfg, led):
     return rows
 
 
+class _UsageSnapshotLedger:
+    """Request-local ledger wrapper providing snapshotted usage reads (mahler#1733)."""
+
+    def __init__(self, led):
+        self._led = led
+        self._usage = {}
+        for r in led.q("SELECT * FROM usage"):
+            self._usage.setdefault(r["platform"], {})[r["window"]] = dict(r)
+
+    def usage(self, platform):
+        return {w: dict(r) for w, r in self._usage.get(platform, {}).items()}
+
+    def __getattr__(self, name):
+        return getattr(self._led, name)
+
+    def __setattr__(self, name, value):
+        if name in ("_led", "_usage"):
+            super().__setattr__(name, value)
+        else:
+            setattr(self._led, name, value)
+
+
 def build(cfg, led, stats_range="week", section=None, project_scope=None):
     """The whole console as plain data (see docs/console/design.md, "Shared
     state model"). Client-only state — tab, theme, expanded groups — is not
@@ -92,6 +114,7 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
     project-shaped views after the shared snapshot is built."""
     measured = section is None or section in SCORECARD_SECTIONS
     measurement_rows = scorecard_rows(cfg, led) if measured else []
+    led = _UsageSnapshotLedger(led) if not isinstance(led, _UsageSnapshotLedger) else led
     now = led.now()
     projects = config.enabled_projects(cfg)
     project_names = [p["name"] for p in projects]

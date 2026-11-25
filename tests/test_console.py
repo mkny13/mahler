@@ -4466,3 +4466,42 @@ class AtlasIssueTests(unittest.TestCase):
         result = subprocess.run(["node", "tests/console_atlas_issue_test.js"],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class ConsoleQueryBudgetTests(unittest.TestCase):
+    def test_single_usage_select(self):
+        cfg, led = make_cfg(), make_led()
+        queries = []
+        led.con.set_trace_callback(queries.append)
+        state.build(cfg, led, section="now")
+        selects = [q for q in queries if q.strip().upper().startswith("SELECT")]
+        usage_selects = [q for q in selects if re.search(r"\bFROM\s+usage\b", q, re.I)]
+        self.assertEqual(len(usage_selects), 1)
+
+    def test_query_budget_under_80(self):
+        cfg, led = make_cfg(), make_led()
+        queries = []
+        led.con.set_trace_callback(queries.append)
+        state.build(cfg, led, section="now")
+        selects = [q for q in queries if q.strip().upper().startswith("SELECT")]
+        self.assertLessEqual(len(selects), 80)
+
+    def test_freshness_between_builds(self):
+        cfg, led = make_cfg(), make_led()
+        s1 = state.build(cfg, led, section="now")
+        led.record_usage("claude", "5h", 88.0, iso(led.now() + timedelta(hours=1)))
+        s2 = state.build(cfg, led, section="now")
+        claude_q2 = next((q for q in s2["quota"] if q["name"] == "claude"), None)
+        self.assertIsNotNone(claude_q2)
+        win2 = next((w for w in claude_q2["windows"] if w["window"] == "5h"), None)
+        self.assertIsNotNone(win2)
+        self.assertEqual(win2["pct"], 88.0)
+
+    def test_quota_and_weekly_reset_equality(self):
+        cfg, led = make_cfg(), make_led()
+        all_fresh(led, pct=25)
+        s = state.build(cfg, led)
+        self.assertIsNotNone(s["quota"])
+        self.assertIsNotNone(s["weekly_quota"])
+
+
