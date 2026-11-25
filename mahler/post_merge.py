@@ -309,15 +309,28 @@ def _pass_on_live_proof(ctx, row, policy):
     """Re-observe the launch-proven artifact before retaining D10 evidence."""
     from . import config, launch_health
     from .ledger import parse
-    remaining = (parse(row["deadline_at"]) - ctx.led.now()).total_seconds()
+    deadline = parse(row["deadline_at"])
+    # A persisted smoke row can outlive its normal budget while the daemon
+    # waits for a canary. Anchor the ceiling to the phase, never to a retry.
+    self_update_deadline = max(
+        deadline, parse(row["phase_started_at"]) + 2 * launch_health.CANARY_INTERVAL)
+    if row["summary"] == "awaiting daemon self-update":
+        deadline = self_update_deadline
+    remaining = (deadline - ctx.led.now()).total_seconds()
     artifact = None
     try:
         artifact = launch_health.exact_live(
-            row["merge_sha"], timeout=min(5, max(.01, remaining / 2)),
+            row["merge_sha"], timeout=min(5, max(.01, remaining / 2)) if remaining > 0 else 5,
             env=config.run_env(ctx.cfg, config.gh_account_of(policy)))
     except Exception:
         pass  # Retry without retaining provider output.
-    if ctx.led.now() >= parse(row["deadline_at"]):
+    if artifact is launch_health.AWAITING_SELF_UPDATE:
+        if ctx.led.now() >= self_update_deadline:
+            _fail(ctx, row, "awaiting_self_update")
+        else:
+            _change(ctx, row, summary="awaiting daemon self-update")
+        return
+    if ctx.led.now() >= deadline:
         _fail(ctx, row, "timeout")
         return
     if not isinstance(artifact, str) or not artifact:
@@ -341,6 +354,9 @@ def _advance(ctx, row, policy):
     if row["phase"] == "live" and policy["post_merge"]["live_strategy"] == "mahler":
         _observe_live(ctx, row, policy)
         return
+    if row["phase"] == "smoke" and policy["post_merge"]["live_strategy"] == "mahler":
+        _pass_on_live_proof(ctx, row, policy)
+        return
     if ctx.led.now() >= parse(row["deadline_at"]):
         _fail(ctx, row, "timeout")
         return
@@ -349,9 +365,6 @@ def _advance(ctx, row, policy):
         return
     if row["phase"] == "live" and policy["post_merge"]["live_strategy"] != "command":
         _observe_live(ctx, row, policy)
-        return
-    if row["phase"] == "smoke" and policy["post_merge"]["live_strategy"] == "mahler":
-        _pass_on_live_proof(ctx, row, policy)
         return
     command = (policy.get("smoke") if row["phase"] == "smoke"
                else policy["post_merge"][row["phase"] + "_command"])
