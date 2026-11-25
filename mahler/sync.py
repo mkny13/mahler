@@ -1108,7 +1108,12 @@ def post_parent_evidence(ctx, projects):
         for row in rows:
             try:
                 record = json.loads(row["value"] or "{}")
-                if record and not record.get("done"):
+                # Legacy records were marked done even when met evidence did not
+                # match. Replay them once with the corrected matcher (#1726).
+                # Keep the migration receipt separate from the evidence format;
+                # unresolved records then follow the ordinary per-tick retry path.
+                replay_key = f"parent_evidence_replay:v1:{row['key']}"
+                if record and (not record.get("done") or not ctx.led.get_kv(replay_key)):
                     # A clean-worktree claim is unverified until its independent
                     # no-change review passes; evidence must not close the parent first.
                     review = no_change.read(ctx.led, project, record["verify"])
@@ -1117,15 +1122,16 @@ def post_parent_evidence(ctx, projects):
                     if review and (review.get("phase") != "done"
                                    or review.get("claim_run") != record["run"]):
                         continue
-                    _apply_parent_evidence(ctx, project, record)
-                    record["done"] = True
+                    unmatched = _apply_parent_evidence(ctx, project, record)
+                    record["done"] = not unmatched
                     ctx.led.set_kv(row["key"], json.dumps(record))
+                    ctx.led.set_kv(replay_key, "1")
             except Exception as e:  # one record cannot stop the tick; retried next tick
                 ctx.say(f"{project}: parent evidence {row['key']} unresolved — {e}")
 
 
 def _apply_parent_evidence(ctx, project, record):
-    """Tick met criteria, file follow-ups for unmet ones, post one comment.
+    """Tick met criteria, file follow-ups, post one comment; return unmatched met text.
 
     Every step is idempotent per run: ticking is a no-op once checked, each
     follow-up and the comment carry per-run markers checked before writing.
@@ -1230,6 +1236,7 @@ def _apply_parent_evidence(ctx, project, record):
         if followups:
             text += ["", "Follow-ups:"] + [f"- {c}: {u}" for c, u in followups]
         gh.comment(parent, f"{AGENT_NOTE}\n{marker}\n" + "\n".join(text))
+    return unmatched
 
 
 def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comments=()):
@@ -1399,12 +1406,15 @@ def _prless_child_evidence(ctx, project, parent, child, issue):
             if (str(author.get("login", "")).casefold() == owner
                     or comment.get("authorAssociation") == "OWNER") and comment.get("body", "").strip():
                 return f"#{child}: closed by owner with comment"
-    for row in ctx.led.q("SELECT value FROM kv WHERE key LIKE ?",
+    for row in ctx.led.q("SELECT key, value FROM kv WHERE key LIKE ?",
                          (f"parent_evidence:{project}#%",)):
         record = json.loads(row["value"] or "{}")
-        # `done` is written only after the existing independent-review gate and
-        # evidence publication succeed. Raw comments cannot forge this provenance.
-        if record.get("parent") != parent or record.get("done") is not True:
+        # Legacy `done` or the replay receipt proves review and publication
+        # succeeded. Unmatched checklist text must not discard valid child
+        # disposition evidence while the record remains pending for retry.
+        applied = record.get("done") is True or ctx.led.get_kv(
+            f"parent_evidence_replay:v1:{row['key']}")
+        if record.get("parent") != parent or not applied:
             continue
         for entry in record.get("entries", []):
             if entry.get("met") is not True or not re.search(
