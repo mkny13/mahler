@@ -20,7 +20,7 @@ const input = (value, keep = "draft") => ({value,
   hasAttribute: k => k === "data-keep"});
 const media = {matches: false, addEventListener: (event, callback) => { resize = callback; }};
 const context = vm.createContext({
-  TextEncoder, URL, console, setTimeout, clearTimeout,
+  TextEncoder, URL, console, setTimeout: (...args) => setTimeout(...args).unref(), clearTimeout,
   root: {getAttribute: k => attrs[k], setAttribute: (k, v) => attrs[k] = v},
   document: {hidden: false, activeElement: null, getElementById: () => null},
   window: browserWindow,
@@ -49,7 +49,9 @@ const context = vm.createContext({
     }, fail() { resolve({ok: false, status: 502}); }}));
   }
 });
-vm.runInContext(slice("  var layoutMedia", "  var mermaidPromise") +
+vm.runInContext(slice("  var REFRESH_MS", "  var POST_TIMEOUT_MS") +
+  slice("  function counts()", "  function openNeedDetails") +
+  slice("  var layoutMedia", "  var mermaidPromise") +
   slice("  function setView", "  // refresh() swaps") +
   slice("  function discardPendingIssueIds(container, keep) {", "  function markSeen()"), context);
 async function finish(promise, html) {
