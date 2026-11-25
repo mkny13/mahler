@@ -1252,3 +1252,59 @@ class NeedsYouCategoryTests(unittest.TestCase):
                          "documented fallback", "linked follow-up issue", "non-blocking",
                          "sent back to you to decide"):
             self.assertIn(fragment, text)
+
+
+class RecipeByteBudgetTests(unittest.TestCase):
+    BUDGET_BYTES = 10_500
+    FIXED_SUBSTITUTIONS = {
+        "number": 1,
+        "repo": "example/project",
+        "title": "Title",
+        "platform": "platform",
+        "worktree": "/tmp/worktree",
+        "branch": "mahler/1-branch",
+        "push_branch": "mahler/1-branch",
+        "pr": 1,
+        "base": "main",
+        "verify": "python3 -m unittest",
+        "handoff": "",
+        "history": "",
+        "rules": "",
+        "whats_new": "",
+        "issue_context": "",
+    }
+
+    def test_rendered_worker_prompts_within_byte_budget(self):
+        for role in ("build", "fix", "review"):
+            with self.subTest(role=role):
+                rendered = prompt.render(role, **self.FIXED_SUBSTITUTIONS)
+                byte_size = len(rendered.encode("utf-8"))
+                self.assertLessEqual(
+                    byte_size, self.BUDGET_BYTES,
+                    f"{role} recipe exceeded budget: {byte_size} > {self.BUDGET_BYTES} bytes"
+                )
+
+    def test_terminal_status_choices_preserved(self):
+        build_rendered = prompt.render("build", **self.FIXED_SUBSTITUTIONS)
+        self.assertEqual(build_rendered.splitlines()[-4:], [
+            "STATUS: DONE <one-line summary of what changed>",
+            "STATUS: NEEDS-YOU [<category>] <the question, on one line> [OPTIONS: <choice> | <choice>]",
+            "STATUS: BLOCKED <reason>",
+            "STATUS: YIELDED <handoff summary>",
+        ])
+
+        fix_rendered = prompt.render("fix", **self.FIXED_SUBSTITUTIONS)
+        self.assertEqual(fix_rendered.splitlines()[-4:], [
+            "STATUS: DONE <one-line summary of what you fixed>",
+            "STATUS: NEEDS-YOU [<category>] <the question, on one line> [OPTIONS: <choice> | <choice>]",
+            "STATUS: BLOCKED <reason>",
+            "STATUS: YIELDED <handoff summary>",
+        ])
+
+        review_rendered = prompt.render("review", **self.FIXED_SUBSTITUTIONS)
+        self.assertEqual(review_rendered.splitlines()[-3:], [
+            'STATUS: REVIEW-PASS {"findings": [...]}',
+            'STATUS: REVIEW-FAIL {"findings": [...]}',
+            'STATUS: NEEDS-YOU [<category>] <the question, on one line> [OPTIONS: <choice> | <choice>]',
+        ])
+
