@@ -75,12 +75,16 @@ class ModelsTests(unittest.TestCase):
         from mahler.console import page
         if not shutil.which('node'):
             self.skipTest('Node is needed for browser regression')
-        script = page.JS[page.JS.index('  var lastFragment'):page.JS.index('  // refresh() swaps')]
+        script = page.JS[page.JS.index('  var REFRESH_MS'):page.JS.index('  var POST_TIMEOUT_MS')]
+        script += page.JS[page.JS.index('  function counts()'):page.JS.index('  function openNeedDetails')]
+        script += page.JS[page.JS.index('  var lastFragment'):page.JS.index('  // refresh() swaps')]
         script += page.JS[page.JS.index('  function discardPendingIssueIds(container, keep) {'):
                           page.JS.index('  function markSeen()')]
         script += r'''
 const assert = require('assert');
 let swaps = 0, applies = 0, revisions = 0, html = 'first';
+function setTimeout() { return 1; }
+function clearTimeout() {}
 let app = {querySelector: () => null, querySelectorAll: () => [], set innerHTML(v) { swaps++; }};
 let document = {hidden: false, activeElement: null, getElementById: () => null};
 let settingsDirty = false, errorToastTimer = null, suppressKeep = [];
