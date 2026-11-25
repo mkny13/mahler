@@ -4466,3 +4466,146 @@ class AtlasIssueTests(unittest.TestCase):
         result = subprocess.run(["node", "tests/console_atlas_issue_test.js"],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class ConsolePollingTests(unittest.TestCase):
+    def test_adaptive_polling_and_request_lifecycle(self):
+        import shutil
+        if not shutil.which("node"):
+            self.skipTest("Node is needed for the browser logic regression")
+        source = (Path(__file__).parents[1] / "mahler/console/console.js").read_text()
+        # Exercise the actual refresh path, timer setup and visibility handler.
+        refresh = source[source.index("  function refresh("):source.index(
+            "  // refresh() swaps only")]
+        scheduling = source[source.index("  var REFRESH_MS"):source.index("  var POST_TIMEOUT_MS")]
+        counts = source[source.index("  function counts()"):source.index("  function openNeedDetails")]
+        visibility = source[source.index('  document.addEventListener("visibilitychange"'):
+                            source.index("\n\n  try {\n    var longTasks")]
+        startup = source[source.index("  if (!applyHash())"):source.index(
+            '  window.addEventListener("hashchange"')]
+        script = r'''
+const assert = require("assert");
+let now = 0, nextId = 0, requests = [], listeners = {}, timers = new Map();
+function timer(fn, ms, repeat) {
+  const id = ++nextId;
+  timers.set(id, {fn, ms, at: now + ms, repeat});
+  assert(timers.size <= 1, "at most one refresh timer");
+  return id;
+}
+function setTimeout(fn, ms) { return timer(fn, ms, false); }
+function setInterval(fn, ms) { return timer(fn, ms, true); }
+function clearTimeout(id) { timers.delete(id); }
+function clearInterval(id) { timers.delete(id); }
+async function flush() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
+async function advance(ms) {
+  const end = now + ms;
+  while (true) {
+    const entry = [...timers].sort((a,b) => a[1].at-b[1].at)[0];
+    if (!entry || entry[1].at > end) break;
+    const [id, t] = entry;
+    now = t.at;
+    if (t.repeat) t.at += t.ms; else timers.delete(id);
+    t.fn();
+    await flush();
+  }
+  now = end;
+}
+let renderedCounts = '{"runs":0}', dirtyForm = false;
+var document = {
+  hidden: false, activeElement: null,
+  getElementById: id => id === "counts" ? {textContent: renderedCounts} : null,
+  addEventListener: (name, fn) => { listeners[name] = fn; }
+};
+var app = {
+  querySelector: selector => selector === "[data-settings-form]" && dirtyForm ? {} : null,
+  querySelectorAll: () => [],
+  set innerHTML(html) { renderedCounts = html; }
+};
+var window = {}, settingsDirty = false, errorToastTimer = null, suppressKeep = [];
+var refreshSequence = 0, lastUpdated, fragmentBytes = 0, lastFragment = null;
+var drafts = {}, settingsDraft = null;
+function statsUrl() { return "/fragment"; }
+function apply() {}
+function applyHash() { return false; }
+function noteStale() {}
+function noteRevision() {}
+function saveSettingsDraft() {}
+function discardPendingIssueIds() {}
+function fetch() {
+  return new Promise((resolve, reject) => requests.push({resolve, reject}));
+}
+async function respond(runs = 0) {
+  const request = requests.shift();
+  assert(request, "expected a pending request");
+  request.resolve({ok: true, text: () => Promise.resolve(JSON.stringify({runs}))});
+  await flush();
+}
+function delay(ms) {
+  assert.equal(timers.size, 1);
+  assert.equal([...timers.values()][0].at - now, ms);
+}
+''' + scheduling + counts + refresh + visibility + startup + r'''
+(async () => {
+  assert.equal(requests.length, 1, "initial immediate refresh");
+  await respond();
+  delay(120000);
+  await advance(119999);
+  assert.equal(requests.length, 0);
+  await advance(1);
+  assert.equal(requests.length, 1);
+  await advance(360000);
+  assert.equal(requests.length, 1, "slow polling fetch must not overlap");
+  await respond(2);
+  delay(30000);
+  await advance(30000);
+  await respond(0);
+  delay(120000);
+
+  document.hidden = true;
+  listeners.visibilitychange();
+  await advance(360000);
+  assert.equal(requests.length, 0, "hidden tabs never fetch");
+  document.hidden = false;
+  listeners.visibilitychange();
+  assert.equal(requests.length, 1, "visibility resumes immediately");
+  listeners.visibilitychange();
+  assert.equal(requests.length, 1, "visibility events coalesce during fetch");
+  await respond();
+  delay(120000);
+
+  refresh(true);
+  assert.equal(requests.length, 1, "actions refresh immediately");
+  await advance(120000);
+  assert.equal(requests.length, 1, "scheduler cannot overlap action refresh");
+  // A second explicit action still refreshes immediately; old responses stay fenced.
+  refresh(true);
+  assert.equal(requests.length, 2);
+  await respond(4);
+  assert.equal(timers.size, 0);
+  await respond(0);
+  delay(120000);
+
+  await advance(120000);
+  requests.shift().reject(new Error("offline"));
+  await flush();
+  delay(120000);
+  document.activeElement = {tagName: "INPUT", value: "draft"};
+  await advance(120000);
+  assert.equal(requests.length, 0);
+  delay(120000);
+  document.activeElement = null;
+  settingsDirty = dirtyForm = true;
+  await advance(120000);
+  assert.equal(requests.length, 0);
+  delay(120000);
+  settingsDirty = dirtyForm = false;
+  await advance(120000);
+  assert.equal(requests.length, 1, "polling resumes after edit guards");
+  document.hidden = true;
+  listeners.visibilitychange();
+  await respond();
+  assert.equal(timers.size, 0, "completion while hidden does not restart polling");
+})().catch(err => { console.error(err); process.exitCode = 1; });
+'''
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
