@@ -2443,6 +2443,53 @@ class RunTests(unittest.TestCase):
         self.assertEqual(rec2["since"], since1)
         self.assertEqual(rec2["checks"], 1)
 
+    def test_delayed_finalization_records_process_exit_time(self):
+        Path(self.log).write_text("STATUS: DONE completed task\n")
+        exit_time = NOW + timedelta(minutes=5)
+        Path(self.run["status_path"]).write_text("0\n")
+        os.utime(self.run["status_path"], (exit_time.timestamp(), exit_time.timestamp()))
+        later = NOW + timedelta(days=1)
+        self.led.clock = lambda: later
+        self.finalize()
+        run_rec = self.led.run(self.run_id)
+        self.assertEqual(run_rec["ended_at"], iso(exit_time))
+        self.assertEqual(run_rec["actual_mins"], 5.0)
+
+    def test_exit_timestamp_fallback_when_missing_pre_start_or_future(self):
+        later = NOW + timedelta(days=1)
+        cases = (
+            ("missing", None),
+            ("pre_start", NOW - timedelta(minutes=5)),
+            ("future", later + timedelta(minutes=5)),
+        )
+        for name, mtime in cases:
+            with self.subTest(case=name):
+                self.led.clock = lambda: NOW
+                run_id = self.led.create_run(project="x", number=5, role="build",
+                                             platform="cline-free", epoch=1, status="running",
+                                             started_at=iso(NOW))
+                self.led.claim("x", 5, f"run:{run_id}", "auto",
+                               self.cfg["defaults"]["auto_lease_minutes"],
+                               platform="cline-free", run_id=run_id)
+                run = dict(self.run, id=run_id, started_at=iso(NOW),
+                           status_path=os.path.join(self.tmp, f"exit_{name}"))
+                Path(self.log).write_text("STATUS: DONE\n")
+                if mtime is not None:
+                    Path(run["status_path"]).write_text("0\n")
+                    os.utime(run["status_path"], (mtime.timestamp(), mtime.timestamp()))
+                elif os.path.exists(run["status_path"]):
+                    os.unlink(run["status_path"])
+                self.led.clock = lambda: later
+                saved = {"ref": "mahler/snapshot/5-run7", "sha": "abc123", "ahead": 1, "stat": None}
+                with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                        mock.patch.object(runner, "snapshot", return_value=saved), \
+                        mock.patch.object(runner, "remove_worktree"):
+                    finalize.finalize(self.ctx, run)
+                run_rec = self.led.run(run_id)
+                self.assertEqual(run_rec["ended_at"], iso(later))
+                self.assertEqual(run_rec["actual_mins"], round((later - NOW).total_seconds() / 60.0, 2))
+
+
 
 
 
