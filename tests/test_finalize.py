@@ -2443,6 +2443,102 @@ class RunTests(unittest.TestCase):
         self.assertEqual(rec2["since"], since1)
         self.assertEqual(rec2["checks"], 1)
 
+    def test_delayed_finalization_records_process_exit_time(self):
+        Path(self.log).write_text("STATUS: DONE completed task\n")
+        exit_time = NOW + timedelta(minutes=5)
+        Path(self.run["status_path"]).write_text("0\n")
+        os.utime(self.run["status_path"], (exit_time.timestamp(), exit_time.timestamp()))
+        later = NOW + timedelta(days=1)
+        self.led.clock = lambda: later
+        self.finalize()
+        run_rec = self.led.run(self.run_id)
+        self.assertEqual(run_rec["ended_at"], iso(exit_time))
+        self.assertEqual(run_rec["actual_mins"], 5.0)
+
+    def test_exit_timestamp_fallback_when_missing_pre_start_or_future(self):
+        later = NOW + timedelta(days=1)
+        cases = (
+            ("missing", None),
+            ("pre_start", NOW - timedelta(minutes=5)),
+            ("future", later + timedelta(minutes=5)),
+            ("unreadable", "unreadable"),
+        )
+        for name, mtime in cases:
+            with self.subTest(case=name):
+                self.led.clock = lambda: NOW
+                run_id = self.led.create_run(project="x", number=5, role="build",
+                                             platform="cline-free", epoch=1, status="running",
+                                             started_at=iso(NOW))
+                self.led.claim("x", 5, f"run:{run_id}", "auto",
+                               self.cfg["defaults"]["auto_lease_minutes"],
+                               platform="cline-free", run_id=run_id)
+                run = dict(self.run, id=run_id, started_at=iso(NOW),
+                           status_path=os.path.join(self.tmp, f"exit_{name}"))
+                Path(self.log).write_text("STATUS: DONE\n")
+                if mtime == "unreadable":
+                    Path(run["status_path"]).write_text("0\n")
+                elif mtime is not None:
+                    Path(run["status_path"]).write_text("0\n")
+                    os.utime(run["status_path"], (mtime.timestamp(), mtime.timestamp()))
+                elif os.path.exists(run["status_path"]):
+                    os.unlink(run["status_path"])
+                self.led.clock = lambda: later
+                saved = {"ref": "mahler/snapshot/5-run7", "sha": "abc123", "ahead": 1, "stat": None}
+                orig_stat = os.stat
+                def fake_stat(p, *args, **kwargs):
+                    if name == "unreadable" and str(p) == run["status_path"]:
+                        raise OSError("stat failed")
+                    return orig_stat(p, *args, **kwargs)
+
+                with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                        mock.patch.object(os, "stat", side_effect=fake_stat), \
+                        mock.patch.object(runner, "snapshot", return_value=saved), \
+                        mock.patch.object(runner, "remove_worktree"):
+                    finalize.finalize(self.ctx, run)
+                run_rec = self.led.run(run_id)
+                self.assertEqual(run_rec["ended_at"], iso(later))
+                self.assertEqual(run_rec["actual_mins"], round((later - NOW).total_seconds() / 60.0, 2))
+
+    def test_delayed_finalization_setup_failure_records_process_exit_time(self):
+        exit_time = NOW + timedelta(minutes=5)
+        Path(self.run["status_path"]).write_text("97\n")
+        os.utime(self.run["status_path"], (exit_time.timestamp(), exit_time.timestamp()))
+        later = NOW + timedelta(days=1)
+        self.led.clock = lambda: later
+        with mock.patch.object(self.ctx, "ping"), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, self.run)
+        run_rec = self.led.run(self.run_id)
+        self.assertEqual(run_rec["ended_at"], iso(exit_time))
+        self.assertEqual(run_rec["actual_mins"], 5.0)
+
+    def test_resolve_ended_at_boundaries_and_corrupt_inputs(self):
+        later = NOW + timedelta(days=1)
+        self.led.clock = lambda: later
+
+        # Missing status_path
+        self.assertEqual(finalize._resolve_ended_at(self.led, {"started_at": iso(NOW)}), later)
+
+        # Missing started_at
+        status_file = os.path.join(self.tmp, "exit_boundary")
+        Path(status_file).write_text("0\n")
+        self.assertEqual(finalize._resolve_ended_at(self.led, {"status_path": status_file}), later)
+
+        # Corrupt started_at
+        self.assertEqual(finalize._resolve_ended_at(self.led, {"started_at": "not-a-date", "status_path": status_file}), later)
+
+        # Exact boundary: exit_dt == started
+        os.utime(status_file, (NOW.timestamp(), NOW.timestamp()))
+        resolved = finalize._resolve_ended_at(self.led, {"started_at": iso(NOW), "status_path": status_file})
+        self.assertEqual(resolved, NOW)
+
+        # Exact boundary: exit_dt == now
+        os.utime(status_file, (later.timestamp(), later.timestamp()))
+        resolved = finalize._resolve_ended_at(self.led, {"started_at": iso(NOW), "status_path": status_file})
+        self.assertEqual(resolved, later)
+
+
+
 
 
 
