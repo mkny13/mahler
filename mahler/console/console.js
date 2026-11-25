@@ -3,7 +3,7 @@
 /* The operator console's browser side (DESIGN D27).
    The server renders everything; this script only keeps browser-side state
    (view, tab, theme, expanded groups, an open overlay) as attributes on
-   <html>, sends writes, and swaps #app for a fresh render every 30s and after
+   <html>, sends writes, and swaps #app for a fresh render every 30s (120s idle) and after
    every write. No transitions: every change is instant. */
 (function () {
   "use strict";
@@ -11,6 +11,20 @@
   var app = document.getElementById("app");
   var loadedRevision = root.getAttribute("data-console-revision");
   var REFRESH_MS = 30000;
+  var IDLE_REFRESH_MS = 120000;
+  var refreshTimer = null;
+  var refreshesInFlight = 0;
+  function clearRefreshTimer() {
+    if (refreshTimer !== null) { clearTimeout(refreshTimer); refreshTimer = null; }
+  }
+  function scheduleRefresh() {
+    clearRefreshTimer();
+    if (document.hidden || refreshesInFlight) { return; }
+    refreshTimer = setTimeout(function () {
+      refreshTimer = null;
+      refresh();
+    }, counts().runs > 0 ? REFRESH_MS : IDLE_REFRESH_MS);
+  }
   var POST_TIMEOUT_MS = 20000;
   var CAPTURE_TIMEOUT_MESSAGE = "Didn't hear back — not sure it saved. Check Backlog before resending.";
   var THEMES = ["auto", "light", "dark"];
@@ -478,10 +492,15 @@
   }
 
   function refresh(force) {
-    if (document.hidden) { return Promise.resolve(); }
-    if (settingsDirty && !force && app.querySelector("[data-settings-form]")) { return Promise.resolve(); }
+    clearRefreshTimer();
+    if (document.hidden || (!force && refreshesInFlight)) { return Promise.resolve(); }
+    if (settingsDirty && !force && app.querySelector("[data-settings-form]")) {
+      scheduleRefresh();
+      return Promise.resolve();
+    }
     var active = document.activeElement;
     if (!force && active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA") && active.value) {
+      scheduleRefresh();
       return Promise.resolve();          // never swap the page out from under typing
     }
     // Clear any error toast on successful refresh
@@ -492,6 +511,7 @@
     suppressKeep = [];
     var sequence = ++refreshSequence;
     var url = statsUrl();
+    refreshesInFlight++;
     return fetch(url, { cache: "no-store" }).then(function (r) {
       if (!r.ok) { throw new Error("refresh " + r.status); }
       return r.text();
@@ -535,6 +555,9 @@
     }).catch(function (err) {
       if (window.console) { console.warn(err); }
       if (sequence === refreshSequence) { noteStale(true); }
+    }).finally(function () {
+      refreshesInFlight--;
+      scheduleRefresh();
     });
   }
 
@@ -1220,7 +1243,10 @@
     if (ev.key === "Escape" && openCapture) { openCapture = false; apply(); }
     if (ev.key === "Escape" && openRelease) { openRelease = null; apply(); }
   });
-  document.addEventListener("visibilitychange", function () { if (!document.hidden) { refresh(); } });
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) { clearRefreshTimer(); }
+    else { refresh(); }
+  });
 
   try {
     var longTasks = new PerformanceObserver(function (list) {
@@ -1255,7 +1281,6 @@
   if (root.getAttribute("data-view") === "history") { markSeen(); }
   apply();
   if (!applyHash()) { refresh(true); }
-  setInterval(function () { refresh(); }, REFRESH_MS);
   window.addEventListener("hashchange", applyHash);
 })();
 
