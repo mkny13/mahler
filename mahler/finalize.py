@@ -10,7 +10,7 @@ import json
 import os
 import re
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from . import ci_blockers, cline_free, config, desktop, failures, no_change, platforms, prompt, review, router, runner, waits
 from .gh import GHError, checks_state
@@ -64,6 +64,31 @@ def parse_needs_you_category(rest):
     return m.group(1).lower(), rest[m.end():]
 
 
+def _resolve_ended_at(led, run):
+    """Derive a completed run's end time from the status/exit file modification
+    time when it is between started_at and the current ledger time. Falls back
+    to the current ledger time when missing, unreadable, before the start, or in
+    the future."""
+    now = led.now()
+    status_path = row_get(run, "status_path")
+    started_at = row_get(run, "started_at")
+    if not status_path or not started_at:
+        return now
+    try:
+        started = parse(started_at)
+        if not started:
+            return now
+        started_utc = started.astimezone(timezone.utc) if started.tzinfo else started.replace(tzinfo=timezone.utc)
+        now_utc = now.astimezone(timezone.utc) if getattr(now, "tzinfo", None) is not None else now.replace(tzinfo=timezone.utc)
+        mtime = os.stat(status_path).st_mtime
+        exit_dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+        if started_utc <= exit_dt <= now_utc:
+            return exit_dt
+    except (OSError, KeyError, TypeError, ValueError, OverflowError):
+        pass
+    return now
+
+
 class Ending:
     """One run's ending, as the outcome handlers below need it.
 
@@ -85,11 +110,16 @@ class Ending:
         self.verify_green = False
         self.blocked_external = False   # prepared before the write lock
         self.blocked_check = (None, "")
+        self.ended_at = _resolve_ended_at(self.led, run)
         self.duration_mins = None
         started_at = row_get(run, "started_at")
         if started_at:
             try:
-                self.duration_mins = (ctx.led.now() - parse(started_at)).total_seconds() / 60.0
+                started = parse(started_at)
+                if started:
+                    started_utc = started.astimezone(timezone.utc) if started.tzinfo else started.replace(tzinfo=timezone.utc)
+                    ended_utc = self.ended_at.astimezone(timezone.utc) if getattr(self.ended_at, "tzinfo", None) is not None else self.ended_at.replace(tzinfo=timezone.utc)
+                    self.duration_mins = (ended_utc - started_utc).total_seconds() / 60.0
             except Exception:                   # noqa: BLE001 — an unreadable timestamp
                 pass                            #   must not cost us the finalize
 
@@ -1127,7 +1157,7 @@ def _close_the_books(e, code):
         else:
             led.release(e.project, e.number, holder=f"run:{run['id']}", epoch=run["epoch"])
     update_cols = {"status": "ended", "outcome": e.outcome, "exit_code": code,
-                   "ended_at": iso(led.now())}
+                   "ended_at": iso(getattr(e, "ended_at", None) or _resolve_ended_at(led, run))}
     if not run["stop_reason"] and e.reason:     # mahler#124: record why it stopped
         update_cols["stop_reason"] = e.reason
     from .run_usage import columns
@@ -1787,7 +1817,7 @@ def _setup_failure(e):
                         f"setup failed (failure {fails} of {SETUP_FAIL_CAP}) — retrying")
         led.release(project, n, holder=f"run:{run['id']}", epoch=run["epoch"])
         led.update_run(run["id"], status="ended", outcome="setup failed", exit_code=97,
-                       ended_at=iso(led.now()))
+                       ended_at=iso(getattr(e, "ended_at", None) or _resolve_ended_at(led, run)))
     _setup_failed_comment(ctx, run, fails, tail, stuck)
     if stuck:
         failures.report(ctx, project, n, "setup_failed", run=run, output=tail)
