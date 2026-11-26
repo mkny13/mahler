@@ -4629,9 +4629,9 @@ class ConsoleQueryBudgetTests(unittest.TestCase):
                 led.con.set_trace_callback(None)
         return [q for q in queries if q.lstrip().upper().startswith("SELECT")]
 
-    def test_query_budget_under_150(self):
-        # Owner-approved budget: usage only; repeated kv reads are out of scope.
-        self.assertLessEqual(len(self.traced_build()), 150)
+    def test_query_budget_under_80(self):
+        # Parent criterion #1733: at most 80 SELECTs for section="now".
+        self.assertLessEqual(len(self.traced_build()), 80)
 
     def test_single_usage_select(self):
         for section in ("now", "capacity", None):
@@ -4649,14 +4649,18 @@ class ConsoleQueryBudgetTests(unittest.TestCase):
                     closing(Ledger(path, clock=Clock())) as writer:
                 cfg = make_cfg()
                 fresh(writer, "claude", "5h", 25)
+                writer.set_kv("discussion:worker", "worker-1")
                 first = state.build(cfg, led, section="now")
                 fresh(writer, "claude", "5h", 88)
+                writer.set_kv("discussion:worker", "worker-2")
                 second = state.build(cfg, led, section="now")
                 def pct(result):
                     card = next(q for q in result["quota"] if q["name"] == "claude")
                     return next(w["pct"] for w in card["windows"] if w["window"] == "5h")
                 self.assertEqual(pct(first), 25)
                 self.assertEqual(pct(second), 88)
+                self.assertEqual(first["discussion_worker"], "worker-1")
+                self.assertEqual(second["discussion_worker"], "worker-2")
 
     def test_quota_and_weekly_reset_equality(self):
         with closing(make_led()) as led, local_timezone("UTC"):
