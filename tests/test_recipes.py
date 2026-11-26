@@ -559,6 +559,19 @@ class BuildPromptWhatsNewInjectionTests(unittest.TestCase):
 
 
 class FixRecipeTests(unittest.TestCase):
+    def test_two_failed_approaches_stop_with_cleanup_and_evidence(self):
+        for requirement in (
+            "After two failed approaches in this run, stop attempting further changes",
+            "Revert this run's unhelpful modifications, including checkpointed edits",
+            "leave the worktree clean; preserve pre-existing work",
+            "In the completion summary, record what each approach tried and why it failed",
+            "include the failing check or other evidence and a revised plan for a fresh context",
+            "end with `STATUS: BLOCKED two failed approaches: <evidence>`",
+            "The two-failed-approaches stop under rule 1a also applies",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, self.text)
+
     def setUp(self):
         rendered = prompt.render(
             "fix", number=565, repo="example/project", title="CI failure",
