@@ -4641,6 +4641,28 @@ class ConsoleQueryBudgetTests(unittest.TestCase):
                                  if re.search(r"\bFROM\s+usage\b", q, re.I)]
                 self.assertEqual(len(usage_selects), 1)
 
+    def test_single_kv_select(self):
+        for section in ("now", "capacity", "settings", None):
+            with self.subTest(section=section):
+                selects = self.traced_build(section)
+                kv_bulk_selects = [q for q in selects
+                                   if re.search(r"\bFROM\s+kv\b", q, re.I)
+                                   and "WHERE" not in q.upper()]
+                self.assertLessEqual(len(kv_bulk_selects), 1)
+                individual_kv_selects = [q for q in selects
+                                         if re.search(r"SELECT\s+value\s+FROM\s+kv\s+WHERE\s+key\s*=", q, re.I)]
+                for q in individual_kv_selects:
+                    self.assertNotIn("hold_reason:", q)
+                    self.assertNotIn("model_rejections:", q)
+                    self.assertNotIn("paused", q)
+
+    def test_snapshot_ledger_set_kv(self):
+        with closing(make_led()) as led:
+            snap = state._RenderSnapshotLedger(led)
+            snap.set_kv("test_key", "test_val")
+            self.assertEqual(snap.get_kv("test_key"), "test_val")
+            self.assertEqual(led.get_kv("test_key"), "test_val")
+
     def test_freshness_between_builds(self):
         # A separate connection represents a daemon writing between requests.
         with tempfile.TemporaryDirectory() as tmp:
@@ -4650,9 +4672,13 @@ class ConsoleQueryBudgetTests(unittest.TestCase):
                 cfg = make_cfg()
                 fresh(writer, "claude", "5h", 25)
                 writer.set_kv("discussion:worker", "worker-1")
+                writer.set_kv("paused", "0")
+                writer.set_kv("hold_reason:claude", "first-hold")
                 first = state.build(cfg, led, section="now")
                 fresh(writer, "claude", "5h", 88)
                 writer.set_kv("discussion:worker", "worker-2")
+                writer.set_kv("paused", "1")
+                writer.set_kv("hold_reason:claude", "second-hold")
                 second = state.build(cfg, led, section="now")
                 def pct(result):
                     card = next(q for q in result["quota"] if q["name"] == "claude")
@@ -4661,6 +4687,22 @@ class ConsoleQueryBudgetTests(unittest.TestCase):
                 self.assertEqual(pct(second), 88)
                 self.assertEqual(first["discussion_worker"], "worker-1")
                 self.assertEqual(second["discussion_worker"], "worker-2")
+                self.assertFalse(first["paused"])
+                self.assertTrue(second["paused"])
+
+    def test_state_build_matches_unwrapped_ledger(self):
+        cfg = make_cfg()
+        for section in ("now", "capacity", "settings", None):
+            with self.subTest(section=section):
+                with closing(make_led()) as led_snap, closing(make_led()) as led_dir:
+                    res_snap = state.build(cfg, led_snap, section=section)
+                    orig = state._RenderSnapshotLedger
+                    try:
+                        state._RenderSnapshotLedger = lambda l: l
+                        res_dir = state.build(cfg, led_dir, section=section)
+                    finally:
+                        state._RenderSnapshotLedger = orig
+                    self.assertEqual(res_snap, res_dir)
 
     def test_quota_and_weekly_reset_equality(self):
         with closing(make_led()) as led, local_timezone("UTC"):

@@ -104,6 +104,13 @@ class _RenderSnapshotLedger:
             return default
         return self._kv[key]
 
+    def set_kv(self, key, value):
+        self._kv[key] = value
+        self._led.set_kv(key, value)
+
+    def paused(self):
+        return self.get_kv("paused") == "1"
+
     def __getattr__(self, name):
         return getattr(self._led, name)
 
