@@ -54,6 +54,13 @@ optional usability/UAT observations, never missing required technical evidence. 
 source/acceptance mismatch fails with actionable evidence. Missing evidence is
 inconclusive: return an empty evidence list, never an unsupported pass.
 
+**Test integrity.** Inspect the claim-supporting diff against its parent base for deleted tests or assertions,
+new skip/xfail/.only, or loosened assertions/thresholds/tolerances. Any such change
+not explicitly requested by the issue OR lacks clear rationale in the completion
+summary is a blocking finding with `category: testing`. Test-only/refactor exemptions
+do not waive this check.
+Record violations in claim `evidence` as `category: testing` and return REVIEW-FAIL.
+
 For the claim-supporting diff, identify each added or modified test and run it
 against the earlier implementation. Build an isolated baseline in a separate
 checkout at the exact checked base, retaining the changed test code while
@@ -100,6 +107,13 @@ reviews if any (`gh pr view $pr -R $repo --comments`), CLAUDE.md / AGENTS.md, an
 `.mahler/project.toml`.
 $handoff
 
+**Test integrity.** Inspect the PR test diff against base for deleted tests or assertions,
+new skip/xfail/.only, or loosened assertions/thresholds/tolerances. Any such change
+not explicitly requested by the issue OR lacks clear rationale in the completion
+summary is a blocking finding with `category: testing`. Test-only/refactor exemptions
+do not waive this check.
+Test integrity overrides rules 2 and 4.
+
 Before numbered criteria, check sensitivity against the exact checked base: for each added or
 modified test, run it in a separate isolated baseline, retaining the changed test code and reverting
 non-test PR changes. Do not alter this checkout. CI's already-green result for the PR's ordinary
@@ -108,9 +122,8 @@ when that test is the only evidence for the change. Pure refactor and test-only 
 state explicitly when either exemption applies. Changes to authorization, accounts, credentials, payments,
 or user data require a negative/abuse test showing unauthorized or other-user access is refused;
 missing one is a blocking finding.
-1. **Be adversarial about correctness, not completeness.** Try to disprove that the diff meets
-   the issue safely. Findings need concrete evidence: input/sequence, actual result, expected
-   result. Style and preference are never findings. Compare CI/toolchain setup with the base:
+1. **Challenge correctness.** Findings need inputs, actual/expected results;
+   style and preference are never findings. Compare CI/toolchain setup with the base:
    removal or downgrade of CI/toolchain setup (including workflow toolchain-selection steps,
    toolchain pins, XcodeGen `project.yml`, Gradle/SDK versions, package engines, and lockfiles)
    is a blocking finding unless the issue explicitly requested that change.
@@ -137,9 +150,7 @@ missing one is a blocking finding.
     blocking gate evidence is a blocking finding; do not waive it because CI is green or the
     dependency seems familiar. Do not demote it to a PR-description-only request or a follow-up.
     If there are no dependency changes, state that explicitly.
-3. Keep the checkout read-only; the separate sensitivity baseline is mandatory even if CI is green.
-   Also catch logic bugs, spec mismatches, and security issues, especially in high-risk files
-   identified by CLAUDE.md.
+3. Check logic, spec, and security, especially CLAUDE.md's high-risk files.
 4. **Blocking requires both** a realistic trigger (normal project data/output/failure modes, not
    contrived input or several independent failures) and a consequential result: violation of
    "Done when", regression, data loss/corruption, unrecoverable state, or security issue.
@@ -158,10 +169,8 @@ missing one is a blocking finding.
    defects and demonstrated normal-flow data loss remain **blocking**. This does not change the
    issue's acceptance criteria: an explicit Done-when requirement for mixed-version or multi-user
    support still applies.
-5. **Heuristics are allowed to be imperfect.** When the issue asks for a heuristic (parsing
-   free text, guessing, scoring, thresholds), judge it on the cases it will actually see. A
-   miss on unusual input is a note unless the miss is common or its failure is costly and
-   hard to undo.
+5. Judge requested heuristics on realistic cases. Unusual misses are notes unless common
+   or costly and hard to undo.
 6. **Re-reviews converge.** Check prior blockers first; unfixed ones still block. Use the supplied
    green round, inclusive threshold, and prior classified evidence. At/after threshold, only new
    substantiated or reproducible unresolved blockers fail. Compare scenario/consequence, not
