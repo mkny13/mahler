@@ -99,6 +99,14 @@ class _RenderSnapshotLedger:
         # Match Ledger.usage's fresh dictionaries so callers cannot mutate the snapshot.
         return {window: dict(row) for window, row in self._usage.get(platform, {}).items()}
 
+    def clear_usage(self, platform, windows):
+        windows = list(windows)
+        cleared = self._led.clear_usage(platform, windows)
+        usage = self._usage.get(platform, {})
+        for window in windows:
+            usage.pop(window, None)
+        return cleared
+
     def get_kv(self, key, default=None):
         if key not in self._kv:
             return default

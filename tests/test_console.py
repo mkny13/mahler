@@ -4704,6 +4704,32 @@ class ConsoleQueryBudgetTests(unittest.TestCase):
                         state._RenderSnapshotLedger = orig
                     self.assertEqual(res_snap, res_dir)
 
+    def test_legacy_model_hold_migration_matches_unwrapped_ledger(self):
+        cfg = make_cfg()
+        for section in ("now", "capacity", "settings", None):
+            with self.subTest(section=section):
+                with closing(make_led()) as led_snap, closing(make_led()) as led_dir:
+                    for led in (led_snap, led_dir):
+                        fresh(led, "kilo", "hold", 100)
+                        led.set_kv("hold_reason:kilo", "model_unavailable")
+                    res_snap = state.build(cfg, led_snap, section=section)
+                    with mock.patch.object(state, "_RenderSnapshotLedger", side_effect=lambda led: led):
+                        res_dir = state.build(cfg, led_dir, section=section)
+                    self.assertEqual(res_snap, res_dir)
+                    self.assertNotIn("hold", led_snap.usage("kilo"))
+                    self.assertIsNone(led_snap.get_kv("hold_reason:kilo"))
+
+    def test_snapshot_clear_usage_updates_only_deleted_windows(self):
+        with closing(make_led()) as led:
+            fresh(led, "kilo", "hold", 100)
+            fresh(led, "kilo", "weekly", 42)
+            fresh(led, "claude", "hold", 100)
+            snap = state._RenderSnapshotLedger(led)
+            self.assertEqual(snap.clear_usage("kilo", iter(["hold", "missing"])), 1)
+            self.assertEqual(snap.usage("kilo"), led.usage("kilo"))
+            self.assertEqual(snap.usage("claude"), led.usage("claude"))
+            self.assertEqual(snap.clear_usage("kilo", []), 0)
+
     def test_quota_and_weekly_reset_equality(self):
         with closing(make_led()) as led, local_timezone("UTC"):
             cfg = make_cfg()
