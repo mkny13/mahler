@@ -716,9 +716,11 @@ class ReviewEvidenceTests(unittest.TestCase):
     def test_description_only_evidence_is_nonblocking(self):
         text = " ".join(prompt.render("review", handoff="").split())
         for fragment in (
-            "PR-description content alone is never blocking",
+            "PR bodies/descriptions/comments",
             "Required evidence such as audit output belongs in the repository or CI",
-            "a PR-description-only evidence request is a follow-up",
+            "Metadata-only requests are notes, not follow-ups",
+            "conductor-managed; builders cannot edit them",
+            "PR metadata-only notes stay outside `findings`",
             "does not demote demonstrated code, security, or actual acceptance failures",
         ):
             self.assertIn(fragment, text)
