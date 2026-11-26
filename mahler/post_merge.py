@@ -314,8 +314,7 @@ def _pass_on_live_proof(ctx, row, policy):
     # waits for a canary. Anchor the ceiling to the phase, never to a retry.
     self_update_deadline = max(
         deadline, parse(row["phase_started_at"]) + 2 * launch_health.CANARY_INTERVAL)
-    if row["summary"] == "awaiting daemon self-update":
-        deadline = self_update_deadline
+    deadline = self_update_deadline
     remaining = (deadline - ctx.led.now()).total_seconds()
     artifact = None
     try:
@@ -330,11 +329,11 @@ def _pass_on_live_proof(ctx, row, policy):
         else:
             _change(ctx, row, summary="awaiting daemon self-update")
         return
-    if ctx.led.now() >= deadline:
-        _fail(ctx, row, "timeout")
-        return
     if not isinstance(artifact, str) or not artifact:
-        _change(ctx, row, summary="exact live identity not yet verified")
+        if ctx.led.now() >= deadline:
+            _fail(ctx, row, "timeout")
+        else:
+            _change(ctx, row, summary="exact live identity not yet verified")
         return
     observed = artifact.removeprefix("mahler:")
     identity = "exact" if observed == row["merge_sha"] else "descendant"
@@ -566,7 +565,9 @@ def _reprobe(ctx, name):
 
 def _recover_live(ctx, row, policy):
     """A late exact self-host proof permits one new live/smoke observation window."""
-    if row["phase"] != "live" or policy["post_merge"]["live_strategy"] != "mahler":
+    if (policy["post_merge"]["live_strategy"] != "mahler"
+            or not (row["phase"] == "live"
+                    or (row["phase"] == "smoke" and row["failure_code"] == "timeout"))):
         return False
     key = f"post-merge-live-reopened:{row['project']}:{row['number']}:{row['merge_sha']}"
     if ctx.led.get_kv(key):
@@ -580,7 +581,8 @@ def _recover_live(ctx, row, policy):
         return False
     if not isinstance(artifact, str) or not artifact:
         return False
-    return ctx.led.reopen_post_merge_live(row["project"], row["number"], row["merge_sha"])
+    return ctx.led.reopen_post_merge_live(
+        row["project"], row["number"], row["merge_sha"], allow_smoke_timeout=True)
 
 
 def advance(ctx, projects):
