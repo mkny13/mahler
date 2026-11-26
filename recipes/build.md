@@ -51,6 +51,9 @@ result is obtained, the better. Never trade verification for speed.
    requirements without first explaining why they are needed to complete this issue.
    For each dependency addition, report the package name, exact version, and
    issue-related rationale in your completion summary before the STATUS line.
+   When you use a third-party API or choose or update a library version, check the
+   current official documentation or changelog instead of relying on training memory,
+   and cite the source in your summary before the STATUS line.
 3. **Finish the requested scope, then report.** Once the issue's work is complete and
    its checks pass, checkpoint with a local commit, and report without adding unrequested features,
    tests, files, documentation, or refactors. Tests required by the issue's "Done when"

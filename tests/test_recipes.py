@@ -1173,6 +1173,17 @@ class DependencyRecipeTests(unittest.TestCase):
                 with self.subTest(role=role, requirement=requirement):
                     self.assertIn(requirement, text)
 
+    def test_build_and_fix_require_current_docs_check(self):
+        for role in ("build", "fix"):
+            text = " ".join(prompt.render(role).split())
+            for requirement in (
+                "When you use a third-party API or choose or update a library version",
+                "check the current official documentation or changelog instead of relying on training memory",
+                "cite the source in your summary before the STATUS line",
+            ):
+                with self.subTest(role=role, requirement=requirement):
+                    self.assertIn(requirement, text)
+
     def test_review_requires_dependency_diff_and_gate_evidence(self):
         text = " ".join(prompt.render("review").split())
         for requirement in (
@@ -1255,7 +1266,7 @@ class NeedsYouCategoryTests(unittest.TestCase):
 
 
 class RecipeByteBudgetTests(unittest.TestCase):
-    BUDGET_BYTES = 10_500
+    BUDGET_BYTES = 10_700
     FIXED_SUBSTITUTIONS = {
         "number": 1,
         "repo": "example/project",
