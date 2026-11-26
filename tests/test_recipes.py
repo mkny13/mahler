@@ -1359,3 +1359,14 @@ class RecipeByteBudgetTests(unittest.TestCase):
             'STATUS: REVIEW-FAIL {"findings": [...]}',
             'STATUS: NEEDS-YOU [<category>] <the question, on one line> [OPTIONS: <choice> | <choice>]',
         ])
+
+
+class VerificationRunnerRecipeTests(unittest.TestCase):
+    def test_long_verify_must_finish_before_terminal_status(self):
+        for role in ("build", "fix"):
+            text = " ".join(prompt.render(role).split())
+            for phrase in ("foreground", "600–900s", "Never end your turn",
+                           "verification runners are active", "check exit codes",
+                           "terminal `STATUS:` line"):
+                with self.subTest(role=role, phrase=phrase):
+                    self.assertIn(phrase, text)
