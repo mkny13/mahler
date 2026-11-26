@@ -365,7 +365,7 @@ class PracticesAuditPolicyTests(unittest.TestCase):
 
     def test_fixed_checklist_is_separate_from_configurable_maintenance(self):
         expected = ("ci-tests", "agent-instructions", "mahler-guidance",
-                    "verify-command", "tracked-secrets", "branch-protection")
+                    "verify-command", "tracked-secrets", "branch-protection", "quality-gates")
         self.assertEqual(config.PRACTICES_AUDIT_CHECKS, expected)
         self.assertEqual(config.PRACTICES_AUDIT_PASS, "practices-audit")
         self.assertNotIn(config.PRACTICES_AUDIT_PASS, config.MAINTENANCE_PASSES)
