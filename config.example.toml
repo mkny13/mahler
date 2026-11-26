@@ -226,9 +226,10 @@ screenshot_path = []              # inherited operator absolute executable direc
 # cooldown_days = 14
 # stale_verified_days = 90       # DESIGN.md "verified" date older than this is flagged
 
-# Cross-project practices audit (DESIGN D39; policy only until scanner/tick
-# integration ships). Proposes issues; never edits audited repos or settings.
-# Scans only enabled projects, using the fixed six PRACTICES_AUDIT_CHECKS.
+# Cross-project practices audit (DESIGN D39). Proposes issues; never edits audited repos or settings.
+# Scans only enabled projects, using the fixed seven PRACTICES_AUDIT_CHECKS.
+# quality-gates checks PR complexity/duplication commands; proposals recommend
+# baseline regression checks, starting report-only and then blocking.
 # Uncomment this table and set enabled = false to disable the whole pass.
 # [practices_audit]
 # enabled = true
