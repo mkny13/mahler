@@ -652,11 +652,12 @@ class PostMergeTests(unittest.TestCase):
             "SELECT * FROM kv WHERE key LIKE 'post-merge-evidence:%'")), 1)
 
     @mock.patch("mahler.notify.send")
-    def test_mahler_smoke_reobserves_until_original_deadline(self, ping):
+    def test_mahler_smoke_reobserves_until_canary_ceiling(self, ping):
         self.mahler_smoke(SHA)
         deadline = self.row()["deadline_at"]
         from mahler.ledger import parse
-        self.now = parse(deadline) - timedelta(seconds=4)
+        ceiling = max(parse(deadline), NOW + 2 * launch_health.CANARY_INTERVAL)
+        self.now = ceiling - timedelta(seconds=4)
         with (
             mock.patch("mahler.launch_health.exact_live") as observe,
             mock.patch.object(post_merge.subprocess, "Popen") as launch,
@@ -673,7 +674,7 @@ class PostMergeTests(unittest.TestCase):
                 self.assertEqual(row["deadline_at"], deadline)
                 self.assertFalse(row["evidence_ref"])
                 self.assertFalse(list(self.root.rglob("report.md")))
-            self.now = parse(deadline)
+            self.now = ceiling
             self.tick()
             self.assertEqual(self.row()["failure_code"], "timeout")
             launch.assert_not_called()
@@ -724,16 +725,58 @@ class PostMergeTests(unittest.TestCase):
         self.assertEqual(self.row()["status"], "FAIL")
         self.assertEqual(self.row()["failure_code"], "awaiting_self_update")
 
-    def test_mahler_smoke_observation_cannot_pass_after_deadline(self):
+    def test_mahler_smoke_observation_passes_at_or_after_deadline(self):
         self.mahler_smoke(SHA)
         from mahler.ledger import parse
-        def observe(*args, **kwargs):
-            self.now = parse(self.row()["deadline_at"])
-            return "mahler:" + SHA
-        with mock.patch("mahler.launch_health.exact_live", side_effect=observe):
+        deadline = parse(self.row()["deadline_at"])
+        for seconds in (0, 1, 7200):
+            with self.subTest(seconds=seconds):
+                self.led.con.execute(
+                    "UPDATE post_merge_checks SET status='pending',evidence_ref=''")
+                def observe(*args, **kwargs):
+                    self.now = deadline + timedelta(seconds=seconds)
+                    return "mahler:" + SHA
+                with mock.patch("mahler.launch_health.exact_live", side_effect=observe):
+                    self.tick()
+                self.assertEqual(self.row()["status"], "PASS")
+                self.assertFalse(self.row()["failure_code"])
+                self.assertIn("Smoke: PASS", Path(self.row()["evidence_ref"]).read_text())
+
+    @mock.patch("mahler.notify.send")
+    def test_mahler_smoke_unverified_summary_keeps_phase_canary_ceiling(self, ping):
+        self.now = NOW + timedelta(seconds=1200)
+        self.mahler_smoke(SHA)
+        ceiling = self.now + 2 * launch_health.CANARY_INTERVAL
+        with mock.patch("mahler.launch_health.exact_live", return_value=None):
+            for seconds in (1799, 1800, 3600, 3601, 4799):
+                self.now = NOW + timedelta(seconds=seconds)
+                self.restart()
+                self.tick()
+                self.assertEqual(self.row()["status"], "pending")
+                self.assertEqual(self.row()["summary"], "exact live identity not yet verified")
+                self.assertFalse(self.row()["evidence_ref"])
+            self.now = ceiling
             self.tick()
         self.assertEqual(self.row()["failure_code"], "timeout")
-        self.assertFalse(list(self.root.rglob("report.md")))
+
+    def test_failed_mahler_smoke_timeout_recovers_after_restart(self):
+        self.mahler_smoke(SHA)
+        self.led.update_post_merge_check(
+            "p", 1, SHA, expected_phase="smoke", phase="smoke",
+            status="FAIL", failure_code="timeout")
+        self.now += timedelta(days=1)
+        with mock.patch.object(post_merge, "_remediate"):
+            with mock.patch("mahler.launch_health.exact_live", return_value=None):
+                self.tick()
+                self.assertEqual(self.row()["status"], "FAIL")
+            self.restart()
+            with mock.patch("mahler.launch_health.exact_live", return_value="mahler:" + SHA):
+                self.tick()
+                self.assertEqual((self.row()["status"], self.row()["phase"]), ("pending", "live"))
+                self.tick()
+                self.tick()
+                self.assertEqual(self.row()["status"], "PASS")
+                self.assertIn("Smoke: PASS", Path(self.row()["evidence_ref"]).read_text())
 
     def _setup_app_git(self):
         self.led.con.execute("DELETE FROM post_merge_checks")
