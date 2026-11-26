@@ -267,6 +267,27 @@ def remember(e, info, findings):
         e.led.set_kv(key, json.dumps(records))
 
 
+# Match the target of a request, not incidental mentions in a code defect.
+_PR_METADATA = re.compile(
+    r"^(?:[-*]\s*(?:\[[ xX]\]\s*)?)?"
+    r"(?:(?:the|merged)\s+)*(?:(?:update|edit|amend|add to)\s+(?:the\s+)?)?"
+    r"(?:PR|pull request)(?:\s*#?\d+)?(?:['’]s)?[\s-]+"
+    r"(?:body|description|comments?)\b", re.IGNORECASE)
+
+
+def pr_metadata_only(finding):
+    """Conservatively recognize metadata targets; explicit code criteria win.
+
+    Reviewers keep mixed/code findings actionable. A Done-when line naming a
+    repository requirement must never be discarded because the location is a PR.
+    """
+    criterion = finding.get("done_when", "").strip()
+    if criterion:
+        return bool(_PR_METADATA.match(criterion))
+    return any(_PR_METADATA.match(finding.get(field, "").strip())
+               for field in ("location", "scenario"))
+
+
 def file_followups(ctx, project, item):
     """Retry intake before merge; remote exact markers recover lost local writes."""
     if ctx.dry_run:
@@ -281,6 +302,8 @@ def file_followups(ctx, project, item):
         for f in record["findings"]:
             if f.get("effective_severity", f["severity"]) != "follow-up" or f.get("linked"):
                 continue
+            if pr_metadata_only(f):
+                continue  # conductor-managed metadata is a note, not builder work
             effective_finding = {**f, "severity": f.get("effective_severity", f["severity"])}
             reason = f.get("disposition_reason", record.get("reason", "Classified as nonblocking by the independent reviewer."))
             try:

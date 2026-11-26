@@ -63,6 +63,27 @@ class ClaimTests(unittest.TestCase):
                     self.led.item("x", 5), self.ctx.policy("x"), {}, "claude", verb,
                     text, None, verb)
 
+    def test_followup_for_merged_pr_body_passes_as_moot(self):
+        self._claim_checks([{"kind": "pr_metadata_moot", "pr": 854,
+                             "text": "PR #854 body lacks Supersedes #849"}])
+        self.gh.pr_view.return_value = {"state": "MERGED", "body": "Missing reference"}
+        self.advance()
+        self.advance()
+        self.assertEqual(self.read()["phase"], "done")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+        self.gh.close_issue.assert_called_once_with(5)
+        self.gh.pr_view.assert_called_once_with(854)
+        self.assertIn("moot", self.comments[0])
+
+    def test_metadata_claim_requires_merged_pr(self):
+        for state in ("OPEN", "CLOSED", ""):
+            with self.subTest(state=state):
+                self.gh.pr_view.return_value = {"state": state}
+                failed, lines = no_change._verify_checks(self.gh, "base", [
+                    {"kind": "pr_metadata_moot", "pr": 854, "text": "PR body lacks X"}])
+                self.assertTrue(failed)
+                self.assertIn("FAILED", lines[0])
+
     def test_pass_closes_once_without_shipping_or_attempts(self):
         self.verdict()
         with mock.patch.object(ship, "_open_pr") as pr:

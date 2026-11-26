@@ -35,7 +35,15 @@ the REVIEW-PASS JSON, as objects the conductor can verify itself:
 `{"kind":"base_ci","text":"CI green on main"}` or
 `{"kind":"pr_merged"|"pr_closed"|"pr_open","pr":123,"text":"PR 123 merged"}`.
 The conductor re-reads them and rejects the claim if any is false; free-text entries are
-invalid. Judge PR-body content yourself from `github_facts`. If a Done-when was overtaken
+invalid. PR descriptions, bodies, and comments are conductor-managed metadata;
+builders cannot edit them. A requirement solely to edit that metadata on an already-merged
+PR is moot, including an existing review follow-up asking for a missing `Supersedes #N`.
+Do not fail the claim for that omission. Declare
+`{"kind":"pr_metadata_moot","pr":123,"text":"PR #123 body lacks Supersedes #N"}`
+in `conductor_checks`; the conductor must confirm MERGED before accepting it as moot.
+Verify all unrelated repository/CI requirements normally; this exemption does not cover
+code that generates or processes PR metadata, or missing repository/CI evidence.
+If a Done-when was overtaken
 by events (a PR was merged where it said "closed as superseded"), accept the claim when
 the goal behind the criterion is met; do not fail it for the stale wording.
 
@@ -129,8 +137,10 @@ missing one is a blocking finding.
    is a blocking finding unless the issue explicitly requested that change.
 2. **Grade against the issue.** Its "Done when" list is authoritative; a different but satisfying
    implementation passes.
-   PR-description content alone is never blocking. Required evidence such as audit output
-   belongs in the repository or CI; a PR-description-only evidence request is a follow-up.
+   PR descriptions, bodies, and comments are conductor-managed metadata that builders
+   cannot edit. Metadata-only omissions are non-blocking notes, never follow-up findings.
+   Required evidence such as audit output belongs in the repository or CI; verify those
+   requirements normally, without requesting a PR-description edit.
    Permission-gated evidence (`workflow_dispatch` / `actions:write`, repo settings/secrets, or
    admin actions) is non-blocking when a documented fallback is met or a linked follow-up issue covers
    live verification. Cite limitation, fallback/follow-up, and remaining coverage. Never demand
@@ -195,6 +205,8 @@ missing one is a blocking finding.
    if nothing clears the bar.
 9. **Classify every actionable finding** as `blocking` or `follow-up`. Follow-ups
    do not fail review: the conductor files linked independent issues before merge.
+   Exclude PR-description/body/comment-only requests from `findings`; mention them as
+   non-blocking prose notes instead. Only actionable repository work belongs in follow-ups.
    Use category `scope`, `spec`, `behavior`, `security`, `data-loss`, `hardening`, or
    `testing`. Scope/spec blockers MUST include `done_when`: an exact complete line
    copied from the issue's Done-when section (including its bullet/checkbox).

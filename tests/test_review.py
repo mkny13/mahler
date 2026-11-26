@@ -15,6 +15,36 @@ from mahler.ledger import Ledger, iso
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
 
 
+class TestMetadataFollowups(unittest.TestCase):
+    def test_file_followups_skips_pr_metadata_findings(self):
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        gh = mock.Mock()
+        gh.issue_by_marker.return_value = None
+        gh.create_issue.return_value = "https://github.com/x/y/issues/99"
+        ctx = SimpleNamespace(led=led, dry_run=False, gh=lambda _: gh,
+                              policy=lambda _: {"repo": "x/y"})
+        findings = [
+            {"location": "sync/package.json:19", "scenario": "PR #854 body lacks Supersedes #849"},
+            {"location": "PR #854 description", "scenario": "Missing Supersedes #849"},
+            {"location": "PR #854 comments", "scenario": "Missing audit link"},
+            {"location": "sync/package.json:19", "scenario": "Missing reference",
+             "done_when": "- [ ] PR #854 description includes Supersedes #849"},
+        ]
+        code = {"location": "parser.py:19", "scenario": "Parser drops PR body fields",
+                "done_when": "- [ ] Parser preserves all fields"}
+        for i, f in enumerate(findings + [code]):
+            f.update(severity="follow-up", category="spec", consequence="Missing information",
+                     marker=f"<!-- finding:{i} -->")
+        led.set_kv("reviewresults:x#5", json.dumps({"1": {
+            "pr": 854, "run_id": 1, "sha": "head", "findings": findings + [code]}}))
+        self.assertTrue(review.file_followups(ctx, "x", {"number": 5, "pr": 854}))
+        self.assertTrue(review.file_followups(ctx, "x", {"number": 5, "pr": 854}))
+        gh.create_issue.assert_called_once()
+        self.assertIn("Parser drops PR body fields", gh.create_issue.call_args.args[0])
+        gh.comment.assert_called_once()
+
+
 class TestEffectiveReviewPure(unittest.TestCase):
     """Pure helper tests: identity, launch binding, run lifecycle, and verdict evidence."""
 
