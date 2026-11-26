@@ -2468,7 +2468,7 @@ change D18 merge behavior.
 `config.enabled_projects(cfg)`, using each project's configured repository and
 path. The discovery snapshot in #743 is not an allowlist; report snapshot
 repositories outside that inventory as skipped. Do not discover or enable
-additional repositories. `config.PRACTICES_AUDIT_CHECKS` fixes these six stable
+additional repositories. `config.PRACTICES_AUDIT_CHECKS` fixes these seven stable
 identifiers; they are not configurable or entries in `maintenance.passes`:
 
 | Check ID | Mechanical question and evidence |
@@ -2479,6 +2479,7 @@ identifiers; they are not configurable or entries in `maintenance.passes`:
 | `verify-command` | Is a verify command documented in agent docs or `.mahler/project.toml`, consistent with the effective configured `verify`, and run by PR CI? Cite commands and paths; a configured command absent from both docs and CI is a gap. |
 | `tracked-secrets` | Do tracked files contain suspected credentials or private data contrary to D4? Report candidates for review, never assert that heuristics prove absence of all secrets. History scanning is outside this initial check. |
 | `branch-protection` | Are default-branch protection and required checks consistent with D18's squash merge and test gate? Cite GitHub settings and check names; unavailable or unsupported settings are unknown, not a pass. |
+| `quality-gates` | Does PR CI invoke complexity or duplication analysis (radon cc, xenon, lizard, jscpd, flake8 with --max-complexity, or pylint explicitly enabling duplicate-code/R0801)? Cite workflow lines and tool commands, including resolved package/shell scripts. Recognized invocations pass; absent analysis is a gap; unresolved execution is unknown. This proves tool invocation, not baseline comparison semantics. Proposals recommend regression comparison against the base branch, starting report-only, then blocking new regressions rather than absolute legacy thresholds. |
 
 Canonical guidance for `mahler-guidance` is the following contract, with the
 project name substituted: interactive sessions use `mahler claim <project>#N`
@@ -2499,7 +2500,7 @@ issues, logs or errors. Checks are cheap, deterministic and standard-library;
 model judgments about test quality or spreading practices are deferred.
 
 `mahler.practices_audit.scan` reads that configured inventory;
-`scan_project` provides the six-result mechanical check for one policy and
+`scan_project` provides the seven-result mechanical check for one policy and
 GitHub client. Literal PR workflow commands and referenced package/shell
 scripts supply CI evidence. Conditional, dynamic, reusable or otherwise
 unresolved execution is unknown; arbitrary Python runner control flow is not

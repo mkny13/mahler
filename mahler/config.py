@@ -104,7 +104,7 @@ DEFAULT_PLATFORM_AUDIT = {
 PRACTICES_AUDIT_PASS = "practices-audit"
 PRACTICES_AUDIT_CHECKS = (
     "ci-tests", "agent-instructions", "mahler-guidance", "verify-command",
-    "tracked-secrets", "branch-protection",
+    "tracked-secrets", "branch-protection", "quality-gates",
 )
 DEFAULT_PRACTICES_AUDIT = {
     "enabled": True,

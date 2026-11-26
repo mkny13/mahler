@@ -125,7 +125,7 @@ class TestPracticesAudit(unittest.TestCase):
         self.addCleanup(self.led.close)
         self.write("AGENTS.md", GUIDANCE)
         self.write("CLAUDE.md", GUIDANCE)
-        self.write(".github/workflows/ci.yml", WORKFLOW)
+        self.write(".github/workflows/ci.yml", WORKFLOW + "      - run: xenon --max-absolute B .\n")
         self.write(".mahler/project.toml",
                    '[verify]\nfast = "python3 -m unittest discover -s tests"\n')
 
@@ -152,12 +152,74 @@ class TestPracticesAudit(unittest.TestCase):
         ctx._gh["owner/demo"] = self.gh
         return ctx
 
-    def test_six_pass_outcomes_and_citations(self):
+    def test_all_pass_outcomes_and_citations(self):
         findings = self.results()
         self.assertEqual({check: "pass" for check in config.PRACTICES_AUDIT_CHECKS},
                          {check: f.state for check, f in findings.items()})
         self.assertIn("ci.yml:8", str(findings["ci-tests"].evidence))
         self.assertIn("heuristics do not prove absence", findings["tracked-secrets"].reason)
+
+    def test_quality_gates_recognized_commands(self):
+        for command in ("radon cc .", "xenon --max-absolute B .", "lizard src",
+                        "npx jscpd src", "python3 -m radon cc .",
+                        "flake8 --max-complexity=10 .",
+                        "flake8 --max-complexity 10 .",
+                        "pylint --disable=all --enable=duplicate-code src",
+                        "pylint --enable R0801 src"):
+            with self.subTest(command=command):
+                self.write(".github/workflows/ci.yml", WORKFLOW + f"      - run: {command}\n")
+                finding = self.results()["quality-gates"]
+                self.assertEqual(finding.state, "pass")
+                self.assertIn("ci.yml:9", str(finding.evidence))
+                self.assertIn(command, str(finding.evidence))
+
+    def test_quality_gates_gap_without_execution(self):
+        for command in ("echo jscpd", "pip install radon", "radon --help",
+                        "flake8 .", "pylint src", "echo --max-complexity=10"):
+            with self.subTest(command=command):
+                self.write(".github/workflows/ci.yml", WORKFLOW + f"      - run: {command}\n")
+                self.assertEqual(self.results()["quality-gates"].state, "gap")
+        self.write(".github/workflows/ci.yml", WORKFLOW.replace("pull_request:", "push:") +
+                   "      - run: jscpd src\n")
+        self.assertEqual(self.results()["quality-gates"].state, "gap")
+
+    def test_quality_gates_unknown_execution(self):
+        for step in ("      - run: make quality\n",
+                     "      - run: jscpd src\n        if: github.event.pull_request.draft == false\n",
+                     "  quality:\n    uses: owner/repo/.github/workflows/quality.yml@v1\n",
+                     "      - run: ${{ matrix.quality }}\n"):
+            with self.subTest(step=step):
+                self.write(".github/workflows/ci.yml", WORKFLOW + step)
+                self.assertEqual(self.results()["quality-gates"].state, "unknown")
+
+    def test_quality_gates_referenced_script(self):
+        self.write("package.json", json.dumps({"scripts": {"quality": "jscpd src"}}))
+        self.write(".github/workflows/ci.yml", WORKFLOW + "      - run: npm run quality\n")
+        finding = self.results()["quality-gates"]
+        self.assertEqual(finding.state, "pass")
+        self.assertIn("package.json:1", str(finding.evidence))
+
+    def test_quality_gates_exemptions(self):
+        self.write(".github/workflows/ci.yml", WORKFLOW)
+        for path, content in (
+            (".mahler/project.toml", '[practices.exemptions]\nquality-gates = "Generated sources are reviewed upstream."\n'),
+            ("DECISIONS.md", "# quality-gates exemption\nGenerated sources are reviewed upstream.\n"),
+        ):
+            with self.subTest(path=path):
+                self.write(path, content)
+                finding = self.results()["quality-gates"]
+                self.assertEqual(finding.state, "pass")
+                self.assertIn("exemption", finding.reason)
+                self.assertIn(path, str(finding.evidence))
+                (self.root / path).unlink()
+
+    def test_quality_gates_proposal(self):
+        self.write(".github/workflows/ci.yml", WORKFLOW)
+        result = audit.scan_project(self.pol, self.gh)
+        filing = audit.file_audit(self.cfg(), (result,), lambda _: self.gh)
+        body = self.gh.issues[filing.proposals["demo/quality-gates"]]["body"]
+        for text in ("report-only", "blocking", "regression", "quality-gates"):
+            self.assertIn(text, body)
 
     def test_instruction_line_budget(self):
         for count in (149, 150, 151):

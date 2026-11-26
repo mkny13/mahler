@@ -768,6 +768,51 @@ def _ci(tree):
     return _finding("ci-tests", state, reason, evidence), rows, sorted(set(jobs)), uncertain
 
 
+def _is_quality_command(command):
+    """Recognize analysis invocations, not installation, prose or help commands."""
+    words = _words(command)
+    if words[:2] == ["python", "-m"]:
+        words = words[2:]
+    elif words[:1] == ["npx"]:
+        words = words[1:]
+    if not words or any(flag in words for flag in ("--help", "-h", "--version", "--dry-run")):
+        return False
+    tool, *args = words
+    if tool in ("xenon", "lizard", "jscpd"):
+        return True
+    if tool == "radon":
+        return args[:1] == ["cc"]
+    if tool == "flake8":
+        return any(re.fullmatch(r"--max-complexity=\d+", arg) or
+                   arg == "--max-complexity" and i + 1 < len(args) and args[i + 1].isdigit()
+                   for i, arg in enumerate(args))
+    if tool == "pylint":
+        for i, arg in enumerate(args):
+            enabled = (arg.partition("=")[2] if arg.startswith("--enable=") else
+                       args[i + 1] if arg == "--enable" and i + 1 < len(args) else "")
+            if {"duplicate-code", "R0801"}.intersection(enabled.split(",")):
+                return True
+    return False
+
+
+def _quality_gates(tree, commands, uncertain):
+    """Identify PR analysis evidence; baseline comparison semantics need review."""
+    matches = [row for row in commands if _is_quality_command(row.cmd)]
+    proven = [row for row in matches if not row.uncertain]
+    unknown = uncertain or any(row.uncertain for row in commands)
+    state = "pass" if proven else "unknown" if unknown else "gap"
+    evidence = [row.cite for row in matches or commands]
+    evidence.extend(cite for row in commands if row.uncertain for cite in row.uncertain_cites)
+    if not evidence:
+        evidence = [".github/workflows: no literal PR quality analysis commands found"]
+    reason = ("PR CI invokes complexity or duplication analysis; baseline comparison and "
+              "blocking policy are not proven." if state == "pass" else
+              "Quality analysis execution cannot be resolved; review PR workflow semantics."
+              if state == "unknown" else
+              "No recognized complexity or duplication analysis invocation in PR CI.")
+    return _finding("quality-gates", state, reason, evidence)
+
+
 def _verify_parts(command, *, separators=""):
     """Split literal AND chains, retaining shell quoting for _words().
 
@@ -1416,7 +1461,7 @@ def _load_exemptions(tree):
 
 
 def scan_project(pol, gh):
-    """Exactly six outcomes, including explicit unknowns for unreadable evidence."""
+    """One outcome per checklist entry, including explicit unknowns for unreadable evidence."""
     tree = _Tree(pol["path"])
     if not tree.root.is_dir():
         return ProjectAudit(pol["name"], pol["repo"], tuple(
@@ -1426,7 +1471,8 @@ def scan_project(pol, gh):
     ci, commands, jobs, uncertain = _ci(tree)
     instructions, guidance = _instructions(tree, pol["name"])
     raw_findings = (ci, instructions, guidance, _verify(tree, pol, commands, uncertain),
-                    _secrets(tree), _protection(gh, jobs, uncertain))
+                    _secrets(tree), _protection(gh, jobs, uncertain),
+                    _quality_gates(tree, commands, uncertain))
     exemptions = _load_exemptions(tree)
     findings = []
     for f in raw_findings:
@@ -1464,6 +1510,7 @@ def proposal_marker(project, check):
 
 
 _CHANGES = {
+    "quality-gates": "Add complexity or duplication regression checks to PR CI (for example radon, xenon, lizard or jscpd). Compare against the base-branch baseline, starting report-only, then blocking new regressions rather than enforcing absolute legacy thresholds.",
     "ci-tests": "Add explicit test execution to pull-request CI, not just a build.",
     "agent-instructions": "Make AGENTS.md authoritative; use an identical CLAUDE.md or a local pointer. Trim effective instructions to <= 150 lines with pointers to detailed docs.",
     "mahler-guidance": "Update effective agent instructions to the D39 canonical participation contract.",
