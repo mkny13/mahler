@@ -30,7 +30,8 @@ def begin(e):
                 summary=e.rest or e.item["title"])
 
 
-PR_KINDS = {"pr_merged": "MERGED", "pr_closed": "CLOSED", "pr_open": "OPEN"}
+PR_KINDS = {"pr_merged": "MERGED", "pr_closed": "CLOSED", "pr_open": "OPEN",
+            "pr_metadata_moot": "MERGED"}
 
 
 def _valid_check(c):
@@ -53,6 +54,8 @@ def _verify_checks(gh, base, checks):
         else:
             state = (gh.pr_view(c["pr"]).get("state") or "").upper()
             ok, fact = state == PR_KINDS[c["kind"]], f"PR #{c['pr']} is {state}"
+            if c["kind"] == "pr_metadata_moot" and ok:
+                fact += "; description/body/comment requirement is moot after merge"
         failed = failed or not ok
         lines.append(f"Conductor-verified {'OK' if ok else 'FAILED'}: {c['text']} ({fact})")
     return failed, lines
