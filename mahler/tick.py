@@ -121,9 +121,31 @@ def _lessons_inventory(ctx, p, now):
     return f"\n\nLesson inventory (as of {now.date().isoformat()} UTC):\n" + "\n".join(lines)
 
 
+def configured_default_models(cfg):
+    """Configured defaults for enabled base platforms, preserving model roles."""
+    return {
+        name: {key: pconf.get(key) for key in (
+            ("build_model", "sort_model") if pconf.get("kind") == "claude"
+            else ("model",))}
+        for name, pconf in cfg.get("platforms", {}).items()
+        if pconf.get("enabled", True) and "slot" not in pconf
+    }
+
+
 def queue_maintenance(ctx, projects):
     """File due maintenance passes as issues (deduped)."""
     led, now = ctx.led, ctx.led.now()
+    models = json.dumps(configured_default_models(ctx.cfg), sort_keys=True)
+    previous_models = led.get_kv("platform_default_models")
+    models_changed_at = parse(led.get_kv("platform_models_changed_at"))
+    if models != previous_models:
+        # First observation establishes a baseline, not a model release.
+        if previous_models is not None:
+            models_changed_at = now
+        if not ctx.dry_run:
+            led.set_kv("platform_default_models", models)
+            if previous_models is not None:
+                led.set_kv("platform_models_changed_at", iso(now))
     for p in projects:
         pol = config.maintenance_policy(ctx.cfg, p["name"])
         if not pol["enabled"] or p["name"] in ctx.passes_filed:
@@ -192,10 +214,18 @@ def queue_maintenance(ctx, projects):
             if skip:
                 continue
             
-            if not led.maintenance_due(p["name"], pass_name, policy=pol):
+            model_change_due = False
+            if pass_name == "guidance" and models_changed_at is not None:
+                last_filed_at = parse(
+                    led.maintenance_checkpoint(p["name"], pass_name)["last_filed_at"])
+                model_change_due = last_filed_at is None or last_filed_at < models_changed_at
+            if not model_change_due and not led.maintenance_due(p["name"], pass_name, policy=pol):
                 continue
             
             title, body = definitions[pass_name]
+            if model_change_due:
+                body += ("\n\nTriggered by a platform default model update: review and prune "
+                         "instructions compensating for older models.")
             if pass_name == "escapes":
                 previous = led.maintenance_checkpoint(p["name"], pass_name)["last_filed_at"]
                 start = previous or iso(now - timedelta(days=pol["cadence_days"]))

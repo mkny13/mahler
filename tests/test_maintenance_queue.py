@@ -298,6 +298,113 @@ class MaintenanceQueueTests(unittest.TestCase):
         self.gh_mock.create_issue.assert_not_called()
 
 
+class ModelChangeGuidanceTests(unittest.TestCase):
+    def setUp(self):
+        MaintenanceQueueTests.setUp(self)
+        self.cfg["projects"]["mahler"]["maintenance"] = {"passes": ["guidance"]}
+        self.cfg["platforms"] = {"codex": {"kind": "codex", "model": "old"}}
+        self.led.set_maintenance_checkpoint(
+            "mahler", "guidance", last_filed_at=NOW - timedelta(days=2),
+            merged_since=3)
+
+    def change_model(self):
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+        self.cfg["platforms"]["codex"]["model"] = "new"
+
+    def test_extracts_enabled_base_defaults_and_preserves_claude_roles(self):
+        self.assertEqual(tick.configured_default_models({"platforms": {
+            "claude": {"kind": "claude", "build_model": "big", "sort_model": "small"},
+            "codex": {"kind": "codex", "model": "default", "effort": "high"},
+            "disabled": {"enabled": False, "model": "ignored"},
+            "variant": {"slot": "codex", "model": "ignored"},
+        }}), {"claude": {"build_model": "big", "sort_model": "small"},
+              "codex": {"model": "default"}})
+
+    def test_initial_snapshot_is_only_a_baseline(self):
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.assertEqual(json.loads(self.led.get_kv("platform_default_models")),
+                         {"codex": {"model": "old"}})
+        self.assertIsNone(self.led.get_kv("platform_models_changed_at"))
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_change_files_early_resets_checkpoint_and_is_idempotent(self):
+        self.change_model()
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+        title, body, labels = self.gh_mock.create_issue.call_args.args
+        self.assertIn("pass:guidance", labels)
+        self.assertIn("platform default model update", body)
+        self.assertIn("older models", body)
+        self.assertEqual(self.led.get_kv("platform_models_changed_at"), iso(NOW))
+        self.assertEqual(json.loads(self.led.get_kv("platform_default_models")),
+                         {"codex": {"model": "new"}})
+        self.assertEqual(self.led.maintenance_checkpoint("mahler", "guidance"),
+                         {"last_filed_at": iso(NOW), "merged_since": 0})
+        self.ctx.passes_filed.clear()
+        self.led.clock = lambda: NOW + timedelta(days=1)
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+        self.assertEqual(self.led.get_kv("platform_models_changed_at"), iso(NOW))
+
+    def test_cooldown_defers_until_elapsed(self):
+        self.change_model()
+        self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:guidance"]),
+                             state="done", state_changed_at=iso(NOW - timedelta(days=13)))
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+        self.led.clock = lambda: NOW + timedelta(days=1)
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+
+    def test_any_open_pass_defers_guidance(self):
+        self.change_model()
+        self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:security"]),
+                             state="ready")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+        self.led.set_state("mahler", 99, "done")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+
+    def test_opt_out_and_disabled_maintenance(self):
+        self.change_model()
+        for policy in ({"passes": ["tests"]}, {"enabled": False}):
+            with self.subTest(policy=policy):
+                self.cfg["projects"]["mahler"]["maintenance"] = policy
+                tick.queue_maintenance(self.ctx, [proj()])
+                self.gh_mock.create_issue.assert_not_called()
+
+    def test_projects_use_their_own_history(self):
+        self.change_model()
+        other = proj(name="other", repo="mkny13/other",
+                     maintenance={"passes": ["guidance"]})
+        self.cfg["projects"]["other"] = other
+        other_gh = mock.Mock()
+        self.ctx._gh["mkny13/other"] = other_gh
+        # The other project has already reviewed guidance at the change time.
+        self.led.set_maintenance_checkpoint("other", "guidance", last_filed_at=NOW)
+        tick.queue_maintenance(self.ctx, [proj(), other])
+        self.gh_mock.create_issue.assert_called_once()
+        other_gh.create_issue.assert_not_called()
+        self.cfg["platforms"]["codex"]["model"] = "newer"
+        self.led.clock = lambda: NOW + timedelta(days=1)
+        self.ctx.passes_filed.clear()
+        tick.queue_maintenance(self.ctx, [proj(), other])
+        self.assertEqual(self.gh_mock.create_issue.call_count, 2)
+        other_gh.create_issue.assert_called_once()
+
+    def test_failed_filing_retries_without_consuming_change(self):
+        self.change_model()
+        before = self.led.maintenance_checkpoint("mahler", "guidance")
+        self.gh_mock.create_issue.side_effect = GHError("unavailable")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.assertEqual(self.led.maintenance_checkpoint("mahler", "guidance"), before)
+        self.gh_mock.create_issue.side_effect = None
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.assertEqual(self.gh_mock.create_issue.call_count, 2)
+
+
 class EscapesQueueTests(unittest.TestCase):
     def setUp(self):
         MaintenanceQueueTests.setUp(self)

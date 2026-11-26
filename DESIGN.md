@@ -1588,6 +1588,16 @@ or select a subset of the eleven passes. The documentation pass compares README,
 examples, design/roadmap status, and operator/agent guidance with current code and CLI help,
 then updates them through the normal issue → agent → conductor pipeline.
 
+A change in any enabled base platform's configured default model also triggers
+the agent `guidance` pass early (Claude's `build_model` / `sort_model`, other
+platforms' `model`; synthetic `slot` variants are excluded). The first snapshot
+establishes a baseline without triggering a pass. Later changes are recorded in
+ledger `platform_default_models` and `platform_models_changed_at`; each project's
+guidance filing checkpoint determines whether it still needs review. This trigger
+respects the project's enabled passes, cooldown after a closed pass, and the
+one-pass-in-flight rule. The issue asks agents to review and prune instructions
+compensating for older models; successful filing resets the guidance checkpoint.
+
 The default-on `gate-coverage` pass (mahler#614) inventories every shipped artifact
 and target, then reports an evidence-backed artifacts × (`verify`, PR CI,
 release-only) table. It inspects the effective operator verify command alongside
