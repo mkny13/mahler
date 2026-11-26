@@ -72,6 +72,28 @@ class LeaseTests(unittest.TestCase):
             phase="live", status="FAIL", failure_code="timeout")
         self.assertFalse(self.led.reopen_post_merge_live("p", 1, sha))
 
+    def test_smoke_timeout_reopen_requires_opt_in_and_is_once_only(self):
+        sha = "a" * 40
+        for number, code in ((1, "timeout"), (2, "smoke_failed")):
+            self.led.create_post_merge_check("p", number, sha, self.post_merge_policy())
+            self.led.update_post_merge_check("p", number, sha,
+                expected_phase="deploy", phase="live")
+            self.led.update_post_merge_check("p", number, sha,
+                expected_phase="live", phase="smoke", live_sha=sha)
+            self.led.update_post_merge_check("p", number, sha,
+                expected_phase="smoke", phase="smoke", status="FAIL", failure_code=code)
+        self.assertFalse(self.led.reopen_post_merge_live("p", 1, sha))
+        self.assertFalse(self.led.reopen_post_merge_live("p", 2, sha, allow_smoke_timeout=True))
+        self.assertTrue(self.led.reopen_post_merge_live("p", 1, sha, allow_smoke_timeout=True))
+        row = self.led.post_merge_check("p", 1, sha)
+        self.assertEqual((row["status"], row["phase"]), ("pending", "live"))
+        self.assertEqual((row["live_sha"], row["artifact_ref"], row["failure_code"]), ("", "", ""))
+        self.led.update_post_merge_check("p", 1, sha,
+            expected_phase="live", phase="smoke", live_sha=sha)
+        self.led.update_post_merge_check("p", 1, sha,
+            expected_phase="smoke", phase="smoke", status="FAIL", failure_code="timeout")
+        self.assertFalse(self.led.reopen_post_merge_live("p", 1, sha, allow_smoke_timeout=True))
+
     def test_post_merge_strategy_deadlines(self):
         for number, (strategy, timeout, expected) in enumerate((
             ("mahler", 1800, 3600), ("mahler", 7200, 7200), ("github", 1800, 1800)
