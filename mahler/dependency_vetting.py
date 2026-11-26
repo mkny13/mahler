@@ -751,6 +751,100 @@ def _changed_lock_dependencies(before, after):
     return changed
 
 
+def _gradle_declarations(text):
+    """Static declaration fingerprint, with a conservative fallback for other DSL.
+
+    Tokenize before looking at braces so comments and quoted text cannot hide a
+    declaration. Only known non-dependency configuration is discarded; unknown
+    expressions (including version variables and resolution rules) stay in the
+    fingerprint and require lock evidence when edited. Never execute Gradle.
+    """
+    tokens = re.findall(
+        r'//[^\n]*|/\*[\s\S]*?\*/|"""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\'|'
+        r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[A-Za-z_$][\w$]*|[^\s]', text)
+    tokens = [t for t in tokens if not t.startswith(("//", "/*")) and t != ";"]
+    def catalog_call(parts, start):
+        # Recognize only complete calls; overrides/unknown expressions remain.
+        if start + 3 >= len(parts) or not re.fullmatch(r"[A-Za-z_]\w*", parts[start]):
+            return start
+        if parts[start + 1] != "(":
+            return start
+        end = start + 2
+        if parts[end] in {"platform", "enforcedPlatform", "testFixtures"}:
+            nested = catalog_call(parts, end)
+            if nested == end:
+                return start
+            end = nested
+        elif parts[end:end + 2] == ["libs", "."]:
+            end += 1
+            while (end + 1 < len(parts) and parts[end] == "."
+                   and re.fullmatch(r"[A-Za-z_]\w*", parts[end + 1])):
+                end += 2
+        else:
+            return start
+        if end >= len(parts) or parts[end] != ")":
+            return start
+        end += 1
+        if parts[end:end + 2] in (["apply", "false"], ["apply", "true"]):
+            end += 2
+        return end
+
+    def fingerprint(parts):
+        result = []
+        index = 0
+        while index < len(parts):
+            # Android DSL and task bodies are unrelated to package coordinates.
+            # Preserve nested dependency/configuration blocks even inside them.
+            if parts[index] in {"android", "tasks"}:
+                end = index + 1
+                while end < len(parts) and parts[end] not in {"{", "}"}:
+                    end += 1
+                if end < len(parts) and parts[end] == "{":
+                    depth, stop = 1, end + 1
+                    while stop < len(parts) and depth:
+                        depth += (parts[stop] == "{") - (parts[stop] == "}")
+                        stop += 1
+                    if depth == 0:
+                        body = parts[end + 1:stop - 1]
+                        sensitive = {"dependencies", "plugins", "buildscript", "configurations",
+                                     "resolutionStrategy", "dependencySubstitution"}
+                        # Unusual nested dependency logic is not safe to discard.
+                        if not any(t in sensitive or (t[:1] in {'"', "'"} and t.count(":") >= 2)
+                                   for t in body):
+                            index = stop
+                            continue
+            result.append(parts[index])
+            index += 1
+        declarations = []
+        index = 0
+        while index < len(result):
+            end = catalog_call(result, index)
+            if end != index:
+                index = end
+                continue
+            declarations.append(result[index])
+            index += 1
+        # Empty declaration containers have no dependency semantics.
+        index = 0
+        while index + 2 < len(declarations):
+            if (declarations[index] in {"dependencies", "plugins"}
+                    and declarations[index + 1:index + 3] == ["{", "}"]):
+                del declarations[index:index + 3]
+            else:
+                index += 1
+        return tuple(declarations)
+
+    return fingerprint(tokens)
+
+
+def _gradle_manifest_changed(path, before, after):
+    if before == after:
+        return False
+    if path.rsplit("/", 1)[-1] == "gradle.properties":
+        return True  # Properties can supply arbitrary dependency/plugin versions.
+    return _gradle_declarations(before or "") != _gradle_declarations(after or "")
+
+
 def _changed_project_dependencies(before, after):
     """Return added or changed manifest and lock dependencies without network access."""
     for path in set(before) | set(after):
@@ -779,7 +873,7 @@ def _changed_project_dependencies(before, after):
 
     gradle_manifests = [p for p in set(before) | set(after)
                         if p.rsplit("/", 1)[-1] in _GRADLE_MANIFESTS - {"libs.versions.toml"}
-                        and before.get(p) != after.get(p)]
+                        and _gradle_manifest_changed(p, before.get(p), after.get(p))]
     if gradle_manifests:
         gradle_locks = [p for p in set(before) | set(after)
                         if (p.rsplit("/", 1)[-1] == "gradle.lockfile"
