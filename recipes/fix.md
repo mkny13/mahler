@@ -22,6 +22,12 @@ and pass with it. For fixes changing authorization, accounts, credentials, payme
 or user data, also write at least one negative/abuse test showing unauthorized or
 other-user access is refused.
 
+**Test integrity.** Never weaken, skip, or delete tests to pass (including
+removing test cases or assertions, adding skip/xfail/.only, or loosening assertion
+thresholds or tolerances). Any test modification or deletion must be explicitly
+requested by the issue's scope; explain each test change and its rationale in the
+completion summary before the STATUS line.
+
 Time matters here: do not spend time that can be avoided; the earlier a correct, verified
 result is obtained, the better. Never trade verification for speed.
 
@@ -65,13 +71,9 @@ result is obtained, the better. Never trade verification for speed.
    instead of undertaking them.
 4. **Checkpoint constantly.** Commit locally after each meaningful step and at least every
    ~10 minutes — you can be stopped at any moment, and uncommitted work is lost.
-4a. **Keep working until a final STATUS line applies.** Do not stop at any of these early
-   reporting points while work is still possible: a summary that announces the next step
-   without taking it; an offer to continue unless the owner prefers otherwise; a list of
-   owner decisions when none blocks the remaining work; or a long turn or completed
-   milestone that merely feels like a good place to report. Put status notes and
-   recommendations in the same message as your next action, then carry on with everything
-   that does not depend on the owner's answer. The wanted stops are the recipe's final
+4a. **Keep working until a final STATUS line applies.** While work is possible, do not stop at a progress summary,
+   offers to continue, non-blocking owner questions, or a long turn/milestone. Put status notes and recommendations in the same message as your next action;
+   carry on with everything that does not depend on the owner's answer. The wanted stops are the recipe's final
    STATUS lines. `NEEDS-YOU` remains reserved for owner decisions under rule 6; `BLOCKED`
    remains available for unrelated runner, network, or infrastructure failures under
    rule 1 so the conductor can retry, and for owner-dependent blockers under rule 7.

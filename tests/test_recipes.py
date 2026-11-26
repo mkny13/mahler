@@ -416,11 +416,10 @@ class BuildRecipeTests(unittest.TestCase):
                       "earlier a correct, verified result is obtained, the better", self.text)
         self.assertIn("Never trade verification for speed", self.text)
         for early_stop in (
-                "a summary that announces the next step without taking it",
-                "an offer to continue unless the owner prefers otherwise",
-                "a list of owner decisions when none blocks the remaining work",
-                "a long turn or completed milestone that merely feels like a good place "
-                "to report",
+                "do not stop at a progress summary",
+                "offers to continue",
+                "non-blocking owner questions",
+                "a long turn/milestone",
         ):
             with self.subTest(early_stop=early_stop):
                 self.assertIn(early_stop, self.text)
@@ -598,11 +597,10 @@ class FixRecipeTests(unittest.TestCase):
                       "earlier a correct, verified result is obtained, the better", self.text)
         self.assertIn("Never trade verification for speed", self.text)
         for early_stop in (
-                "a summary that announces the next step without taking it",
-                "an offer to continue unless the owner prefers otherwise",
-                "a list of owner decisions when none blocks the remaining work",
-                "a long turn or completed milestone that merely feels like a good place "
-                "to report",
+                "do not stop at a progress summary",
+                "offers to continue",
+                "non-blocking owner questions",
+                "a long turn/milestone",
         ):
             with self.subTest(early_stop=early_stop):
                 self.assertIn(early_stop, self.text)
@@ -1252,6 +1250,36 @@ class NeedsYouCategoryTests(unittest.TestCase):
                          "documented fallback", "linked follow-up issue", "non-blocking",
                          "sent back to you to decide"):
             self.assertIn(fragment, text)
+
+
+class TestIntegrityRecipeTests(unittest.TestCase):
+    def test_build_and_fix_prohibit_tampering_and_require_rationale(self):
+        for role in ("build", "fix"):
+            text = " ".join(prompt.render(role).split())
+            for requirement in (
+                "Never weaken, skip, or delete tests to pass",
+                "removing test cases or assertions",
+                "adding skip/xfail/.only",
+                "loosening assertion thresholds or tolerances",
+                "Any test modification or deletion must be explicitly requested by the issue's scope",
+                "explain each test change and its rationale in the completion summary before the STATUS line",
+            ):
+                with self.subTest(role=role, requirement=requirement):
+                    self.assertIn(requirement, text)
+
+    def test_both_review_modes_block_unrequested_or_unexplained_test_weakening(self):
+        for claim_mode in (False, True):
+            text = " ".join(prompt.render("review", claim_mode=claim_mode).split())
+            diff = "claim-supporting diff against its parent base" if claim_mode else "PR test diff against base"
+            for requirement in (
+                f"Inspect the {diff}",
+                "deleted tests or assertions, new skip/xfail/.only, or loosened assertions/thresholds/tolerances",
+                "not explicitly requested by the issue OR lacks clear rationale in the completion summary",
+                "blocking finding with `category: testing`",
+                "Test-only/refactor exemptions do not waive this check",
+            ):
+                with self.subTest(claim_mode=claim_mode, requirement=requirement):
+                    self.assertIn(requirement, text)
 
 
 class RecipeByteBudgetTests(unittest.TestCase):
