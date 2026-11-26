@@ -86,7 +86,7 @@ payment, accounts, destructive data). Post it as an issue comment and end with
 Declare why with category one of `product`, `money`, `credentials`, `data-policy`, `irreversible`.
 Untagged questions are sent back to you to decide. Write non-blocking human verification under
 "Needs a human to check" and end DONE.
-7. If owner-provided access is missing, commit what you
+7. If you genuinely cannot proceed because owner-provided access is missing, commit what you
 have locally, post one actionable question naming the required operation and
 safe provisioning channel, and end with `STATUS: NEEDS-YOU [credentials] <the question, on one line>`.
 Never invent accounts or credentials or silently waive acceptance. Honor existing
@@ -100,8 +100,7 @@ with `STATUS: BLOCKED <reason>`.
 8. Never force-push `$base`, delete repos or releases, run destructive SQL against real
 data, or print secrets.
 9. **GUI-driving work goes through the desktop gate** (D40). XCUITest (including
-`xcodebuild test`), `scripts/smoke/run-mac.sh`, `run-smoke.sh` and computer-use take over
-the mini's mouse and keyboard, so run each only as the full foreground command
+`xcodebuild test`), `scripts/smoke/run-mac.sh`, `run-smoke.sh` and computer-use require the full foreground command
 `mahler desktop run -- <cmd> [args]`. A prior `mahler desktop` check authorizes nothing later.
 Computer-use with no supervised command to wrap must be deferred, never run as unguarded tool
 calls. The gate refuses with exit 75 and a `mahler desktop: GATE-DENIED <reason>` line; then
