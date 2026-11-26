@@ -2464,7 +2464,7 @@ identifiers; they are not configurable or entries in `maintenance.passes`:
 | Check ID | Mechanical question and evidence |
 |---|---|
 | `ci-tests` | Does PR CI run tests, beyond a build? Cite workflow triggers, jobs and test commands or referenced scripts; a workflow name alone proves nothing. |
-| `agent-instructions` | Is AGENTS.md the instruction source of truth, with CLAUDE.md a pointer or identical copy? Missing AGENTS.md or divergent content is a gap; a one-line pointer is valid. |
+| `agent-instructions` | Is AGENTS.md the instruction source of truth, with CLAUDE.md a pointer or identical copy? Missing AGENTS.md, divergent content, or effective AGENTS.md exceeding 150 lines is a gap; cite the resolved source and line count. A one-line pointer is valid, but its effective target must meet the <= 150-line budget. Keep detailed protocols in linked docs. |
 | `mahler-guidance` | Is the canonical Mahler participation guidance below present and current in the effective agent instructions? Cite missing or stale markers. |
 | `verify-command` | Is a verify command documented in agent docs or `.mahler/project.toml`, consistent with the effective configured `verify`, and run by PR CI? Cite commands and paths; a configured command absent from both docs and CI is a gap. |
 | `tracked-secrets` | Do tracked files contain suspected credentials or private data contrary to D4? Report candidates for review, never assert that heuristics prove absence of all secrets. History scanning is outside this initial check. |

@@ -159,6 +159,30 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertIn("ci.yml:8", str(findings["ci-tests"].evidence))
         self.assertIn("heuristics do not prove absence", findings["tracked-secrets"].reason)
 
+    def test_instruction_line_budget(self):
+        for count in (149, 150, 151):
+            for mode in ("identical", "pointer", "sole"):
+                with self.subTest(lines=count, mode=mode):
+                    content = GUIDANCE + "Additional guidance.\n" * (count - len(GUIDANCE.splitlines()))
+                    self.write("AGENTS.md", content)
+                    if mode == "sole":
+                        (self.root / "CLAUDE.md").unlink()
+                    else:
+                        self.write("CLAUDE.md", content if mode == "identical" else "See AGENTS.md\n")
+                    instructions, guidance = audit._instructions(audit._Tree(self.root), "demo")
+                    self.assertEqual(instructions.state, "gap" if count > 150 else "pass")
+                    self.assertIn(f"AGENTS.md: {count} lines (maximum 150)", instructions.evidence)
+                    self.assertEqual(guidance.state, "pass")
+
+    def test_instruction_budget_counts_effective_pointer_target(self):
+        self.write("docs/instructions.md", GUIDANCE + "Extra.\n" * (151 - len(GUIDANCE.splitlines())))
+        self.write("AGENTS.md", "See docs/instructions.md\n")
+        self.write("CLAUDE.md", "See AGENTS.md\n")
+        instructions, guidance = audit._instructions(audit._Tree(self.root), "demo")
+        self.assertEqual(instructions.state, "gap")
+        self.assertIn("docs/instructions.md: 151 lines (maximum 150)", instructions.evidence)
+        self.assertEqual(guidance.state, "pass")
+
     def test_report_evidence_is_bounded_with_omission_count(self):
         finding = audit.Finding("ci-tests", "unknown", "review semantics",
                                 tuple(f"citation-{i}-" + "x" * 400 for i in range(300)))

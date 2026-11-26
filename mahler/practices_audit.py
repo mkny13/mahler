@@ -21,6 +21,8 @@ from . import config, redact
 from .gh import GHError
 from .ledger import parse
 
+MAX_INSTRUCTION_LINES = 150
+
 TITLE = "Cross-project practices audit"
 REPORT_URL_KEY = "practices_audit:report_url"
 REPORT_MARKER_KEY = "practices_audit:report_marker"
@@ -205,6 +207,8 @@ def _instructions(tree, project):
     except (OSError, UnicodeError):
         return tuple(_finding(c, "unknown", "Instruction source cannot be read or resolved.",
                               ["AGENTS.md"]) for c in ("agent-instructions", "mahler-guidance"))
+    line_count = len(agents.splitlines())
+    evidence.append(f"{source}: {line_count} lines (maximum {MAX_INSTRUCTION_LINES})")
     try:
         claude_source, claude = _effective(tree, "CLAUDE.md")
         evidence.append(f"CLAUDE.md resolves to {claude_source}")
@@ -220,6 +224,11 @@ def _instructions(tree, project):
     except (OSError, UnicodeError):
         instructions = _finding("agent-instructions", "unknown",
                                 "CLAUDE.md cannot be read or resolved.", evidence)
+    if line_count > MAX_INSTRUCTION_LINES:
+        instructions = _finding(
+            "agent-instructions", "gap",
+            f"Effective AGENTS.md exceeds the {MAX_INSTRUCTION_LINES}-line budget. "
+            + instructions.reason, evidence)
     normalized = re.sub(r"\s+", " ", agents)
     markers = [f"mahler {verb} {project}#" for verb in ("claim", "heartbeat", "ship", "release")]
     markers += ["mahler/<N>-short-slug", "Fixes #N", "STATUS", "verify", "commit", "push"]
@@ -1456,7 +1465,7 @@ def proposal_marker(project, check):
 
 _CHANGES = {
     "ci-tests": "Add explicit test execution to pull-request CI, not just a build.",
-    "agent-instructions": "Make AGENTS.md authoritative; use an identical CLAUDE.md or a local pointer.",
+    "agent-instructions": "Make AGENTS.md authoritative; use an identical CLAUDE.md or a local pointer. Trim effective instructions to <= 150 lines with pointers to detailed docs.",
     "mahler-guidance": "Update effective agent instructions to the D39 canonical participation contract.",
     "verify-command": "Document the effective verify command and invoke the same command in PR CI.",
     "tracked-secrets": "Review candidates locally; remove real credentials/private data and rotate exposed credentials.",
