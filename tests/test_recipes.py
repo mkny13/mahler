@@ -1175,9 +1175,9 @@ class DependencyRecipeTests(unittest.TestCase):
         for role in ("build", "fix"):
             text = " ".join(prompt.render(role).split())
             for requirement in (
-                "When you use a third-party API or choose or update a library version",
-                "check the current official documentation or changelog instead of relying on training memory",
-                "cite the source in your summary before the STATUS line",
+                "For third-party APIs or choosing/updating library versions",
+                "check current official docs/changelogs, not training memory",
+                "cite the source in the pre-STATUS completion summary",
             ):
                 with self.subTest(role=role, requirement=requirement):
                     self.assertIn(requirement, text)
@@ -1294,7 +1294,7 @@ class TestIntegrityRecipeTests(unittest.TestCase):
 
 
 class RecipeByteBudgetTests(unittest.TestCase):
-    BUDGET_BYTES = 10_700
+    BUDGET_BYTES = 10_500
     FIXED_SUBSTITUTIONS = {
         "number": 1,
         "repo": "example/project",
@@ -1346,4 +1346,3 @@ class RecipeByteBudgetTests(unittest.TestCase):
             'STATUS: REVIEW-FAIL {"findings": [...]}',
             'STATUS: NEEDS-YOU [<category>] <the question, on one line> [OPTIONS: <choice> | <choice>]',
         ])
-
