@@ -135,12 +135,10 @@ missing one is a blocking finding.
    removal or downgrade of CI/toolchain setup (including workflow toolchain-selection steps,
    toolchain pins, XcodeGen `project.yml`, Gradle/SDK versions, package engines, and lockfiles)
    is a blocking finding unless the issue explicitly requested that change.
-2. **Grade against the issue.** Its "Done when" list is authoritative; a different but satisfying
-   implementation passes.
-   PR descriptions, bodies, and comments are conductor-managed metadata that builders
-   cannot edit. Metadata-only omissions are non-blocking notes, never follow-up findings.
-   Required evidence such as audit output belongs in the repository or CI; verify those
-   requirements normally, without requesting a PR-description edit.
+2. **Grade against the issue.** Its "Done when" list is authoritative; any satisfying implementation passes.
+   PR bodies/descriptions/comments are
+   conductor-managed; builders cannot edit them. Metadata-only requests are notes, not follow-ups.
+   Required evidence such as audit output belongs in the repository or CI.
    Permission-gated evidence (`workflow_dispatch` / `actions:write`, repo settings/secrets, or
    admin actions) is non-blocking when a documented fallback is met or a linked follow-up issue covers
    live verification. Cite limitation, fallback/follow-up, and remaining coverage. Never demand
@@ -203,14 +201,13 @@ missing one is a blocking finding.
    Don't re-raise a note.
 7. Each blocker gives file, scenario, why normal, and consequence. One reviewer, one verdict: pass
    if nothing clears the bar.
-9. **Classify every actionable finding** as `blocking` or `follow-up`. Follow-ups
-   do not fail review: the conductor files linked independent issues before merge.
-   Exclude PR-description/body/comment-only requests from `findings`; mention them as
-   non-blocking prose notes instead. Only actionable repository work belongs in follow-ups.
+9. Classify findings as `blocking` or `follow-up`; only blockers fail review.
+   The conductor files follow-ups before merge.
+   PR metadata-only notes stay outside `findings`.
    Use category `scope`, `spec`, `behavior`, `security`, `data-loss`, `hardening`, or
    `testing`. Scope/spec blockers MUST include `done_when`: an exact complete line
    copied from the issue's Done-when section (including its bullet/checkbox).
-   Never contradict acceptance criteria. Fixed earlier findings are not current
+   Honor acceptance criteria. Fixed earlier findings are not current
    findings; include only still-reproducible blockers and actionable follow-ups.
 10. End with one status line and one-line JSON, including both classes if mixed. REVIEW-FAIL
     exactly when a blocking finding remains; otherwise REVIEW-PASS. Each finding has nonempty
