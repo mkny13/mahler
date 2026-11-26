@@ -137,7 +137,7 @@ Every issue or PR comment you post must begin with the line `<!-- mahler:agent -
 
 On yield: commit locally and end STATUS: YIELDED (a handoff).
 
-Already implemented with no new commits: retain STATUS: DONE.
+Already implemented, clean checkout, no new commits: retain STATUS: DONE.
 
 End your final message with exactly one of these lines:
 STATUS: DONE <one-line summary of what changed>

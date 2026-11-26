@@ -55,7 +55,7 @@ source/acceptance mismatch fails with actionable evidence. Missing evidence is
 inconclusive: return an empty evidence list, never an unsupported pass.
 
 **Test integrity.** Inspect the claim-supporting diff against its parent base for deleted tests or assertions,
-new skip/xfail/.only, or loosened assertions/thresholds/tolerances. Any such change
+new skip/xfail/.only, or loosened assertions/thresholds/tolerances. Any such change that is
 not explicitly requested by the issue OR lacks clear rationale in the completion
 summary is a blocking finding with `category: testing`. Test-only/refactor exemptions
 do not waive this check.
@@ -108,7 +108,7 @@ reviews if any (`gh pr view $pr -R $repo --comments`), CLAUDE.md / AGENTS.md, an
 $handoff
 
 **Test integrity.** Inspect the PR test diff against base for deleted tests or assertions,
-new skip/xfail/.only, or loosened assertions/thresholds/tolerances. Any such change
+new skip/xfail/.only, or loosened assertions/thresholds/tolerances. Any such change that is
 not explicitly requested by the issue OR lacks clear rationale in the completion
 summary is a blocking finding with `category: testing`. Test-only/refactor exemptions
 do not waive this check.
