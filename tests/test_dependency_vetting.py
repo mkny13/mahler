@@ -608,6 +608,55 @@ class SwiftGradleTests(unittest.TestCase):
         with self.assertRaises(vetting.VettingError):
             vetting.changed_dependencies(gradle_before, gradle_stale)
 
+    def test_gradle_compile_sdk_rewrite_with_catalog_bump_without_lock(self):
+        before = GradleCatalogTests.files("22.3.1")
+        after = GradleCatalogTests.files("23.0.0")
+        declarations = ('plugins { alias(libs.plugins.android.application) }\n'
+                        'dependencies { implementation(libs.cast) }\n')
+        before["app/build.gradle.kts"] = declarations + "android { compileSdk = 37 }"
+        after["app/build.gradle.kts"] = declarations + (
+            "android { compileSdk { version = release(37) { minorApiLevel = 1 } } }")
+        self.assertEqual([(d.name, d.version) for d in vetting.changed_dependencies(before, after)],
+                         [("com.google.android.gms:play-services-cast-framework", "23.0.0")])
+
+    def test_gradle_non_dependency_and_alias_edits_without_lock(self):
+        for path in ("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"):
+            for old, new in (
+                ('dependencies { implementation("g:a:1") }',
+                 '/* explanation */ dependencies { implementation ( "g:a:1" ) }\n'
+                 'tasks.register("hello") { doLast { println("hello") } }'),
+                ('dependencies { implementation(libs.old) }',
+                 'dependencies { implementation(libs.new) }'),
+                ('plugins { alias(libs.plugins.old) }',
+                 'plugins { alias(libs.plugins.new) apply false }'),
+                ('dependencies {}', 'dependencies { implementation(platform(libs.bom)) }'),
+            ):
+                with self.subTest(path=path, new=new):
+                    self.assertEqual(vetting.changed_dependencies({path: old}, {path: new}), [])
+
+    def test_gradle_changed_unresolved_declarations_still_require_lock(self):
+        for path in ("build.gradle", "build.gradle.kts", "settings.gradle.kts"):
+            for declaration in (
+                'dependencies { implementation("g:a:v") }',
+                "dependencies { implementation 'g:a:v' }",
+                'dependencies { customConfiguration("g:a:v") }',
+                'dependencies { implementation(libs.demo) { version { strictly("2") } } }',
+                'dependencies { implementation(dynamicDependency) }',
+                'plugins { id("org.example.plugin") version "2" }',
+                "plugins { id 'org.example.plugin' version '2' }",
+                'pluginManagement { plugins { id("org.example.plugin") version "2" } }',
+            ):
+                with self.subTest(path=path, declaration=declaration):
+                    for old in ("", declaration.replace('"2"', '"1"').replace(':v', ':old')):
+                        if old == declaration:
+                            continue
+                        with self.assertRaisesRegex(vetting.VettingError,
+                                                   "unresolved Gradle dependency manifest change without lockfile"):
+                            vetting.changed_dependencies({path: old}, {path: declaration})
+        with self.assertRaises(vetting.VettingError):
+            vetting.changed_dependencies({"gradle.properties": "depVersion=1"},
+                                         {"gradle.properties": "depVersion=2"})
+
     def test_swift_schemas_and_gradle_legacy_lock(self):
         for schema in (1, 2, 3):
             self.assertEqual(len(vetting.changed_dependencies({}, swift_files(schema=schema))), 1)
