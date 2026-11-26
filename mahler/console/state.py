@@ -83,6 +83,23 @@ def scorecard_rows(cfg, led):
     return rows
 
 
+class _UsageSnapshotLedger:
+    """Read usage once per render; delegate all other reads to the live ledger."""
+
+    def __init__(self, led):
+        self._led = led
+        self._usage = {}
+        for row in led.q("SELECT * FROM usage"):
+            self._usage.setdefault(row["platform"], {})[row["window"]] = dict(row)
+
+    def usage(self, platform):
+        # Match Ledger.usage's fresh dictionaries so callers cannot mutate the snapshot.
+        return {window: dict(row) for window, row in self._usage.get(platform, {}).items()}
+
+    def __getattr__(self, name):
+        return getattr(self._led, name)
+
+
 def build(cfg, led, stats_range="week", section=None, project_scope=None):
     """The whole console as plain data (see docs/console/design.md, "Shared
     state model"). Client-only state — tab, theme, expanded groups — is not
@@ -92,6 +109,7 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
     project-shaped views after the shared snapshot is built."""
     measured = section is None or section in SCORECARD_SECTIONS
     measurement_rows = scorecard_rows(cfg, led) if measured else []
+    led = _UsageSnapshotLedger(led)
     now = led.now()
     projects = config.enabled_projects(cfg)
     project_names = [p["name"] for p in projects]

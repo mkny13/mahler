@@ -4616,3 +4616,58 @@ function delay(ms) {
 '''
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class ConsoleQueryBudgetTests(unittest.TestCase):
+    def traced_build(self, section="now"):
+        with closing(make_led()) as led:
+            queries = []
+            led.con.set_trace_callback(queries.append)
+            try:
+                state.build(make_cfg(), led, section=section)
+            finally:
+                led.con.set_trace_callback(None)
+        return [q for q in queries if q.lstrip().upper().startswith("SELECT")]
+
+    def test_query_budget_under_150(self):
+        # Owner-approved budget: usage only; repeated kv reads are out of scope.
+        self.assertLessEqual(len(self.traced_build()), 150)
+
+    def test_single_usage_select(self):
+        for section in ("now", "capacity", None):
+            with self.subTest(section=section):
+                selects = self.traced_build(section)
+                usage_selects = [q for q in selects
+                                 if re.search(r"\bFROM\s+usage\b", q, re.I)]
+                self.assertEqual(len(usage_selects), 1)
+
+    def test_freshness_between_builds(self):
+        # A separate connection represents a daemon writing between requests.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "ledger.db")
+            with closing(Ledger(path, clock=Clock())) as led, \
+                    closing(Ledger(path, clock=Clock())) as writer:
+                cfg = make_cfg()
+                fresh(writer, "claude", "5h", 25)
+                first = state.build(cfg, led, section="now")
+                fresh(writer, "claude", "5h", 88)
+                second = state.build(cfg, led, section="now")
+                def pct(result):
+                    card = next(q for q in result["quota"] if q["name"] == "claude")
+                    return next(w["pct"] for w in card["windows"] if w["window"] == "5h")
+                self.assertEqual(pct(first), 25)
+                self.assertEqual(pct(second), 88)
+
+    def test_quota_and_weekly_reset_equality(self):
+        with closing(make_led()) as led, local_timezone("UTC"):
+            cfg = make_cfg()
+            for populated in (False, True):
+                with self.subTest(populated=populated):
+                    if populated:
+                        all_fresh(led, pct=25)
+                    # Unwrapped helpers preserve the original direct-ledger path.
+                    quota = state._quota(cfg, led, state._peak(cfg, led), {})
+                    weekly = state.week_calendar(cfg, led, led.now())
+                    result = state.build(cfg, led, section="capacity")
+                    self.assertEqual(result["quota"], quota)
+                    self.assertEqual(result["weekly_quota"], weekly)
