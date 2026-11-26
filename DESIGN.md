@@ -1442,7 +1442,10 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
 - **A missing STATUS line isn't the end of the story.** If the branch has commits ahead of
   base and the project's `verify` passes when Mahler runs it, the build counts as done. The PR
   goes up with a note that the agent didn't confirm it had finished; CI and review decide
-  from there. Otherwise it's a failed attempt, as before.
+  from there. Saved work plus final words about verification in progress also permits
+  fallback for an unchanged replayed HEAD. If verification cannot confirm green, that
+  missing-STATUS run waits without an attempt charge (D52), preserving the work for
+  retry; ordinary dead runs without verification evidence still fail (mahler#1754).
 - Red CI first gets one durable failed-job rerun allowance per project/issue/PR/head
   when the exact Actions workflow/job succeeded at the actual target tip, or a current
   CI-triggered fix reports `STATUS: BLOCKED CI-RETRY <evidence>` with a clean,

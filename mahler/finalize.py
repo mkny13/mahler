@@ -108,6 +108,7 @@ class Ending:
         self.stale = False          # lease revoked or replaced: leave the item alone
         self.after_commit = []
         self.verify_green = False
+        self.verify_wait = False
         self.blocked_external = False   # prepared before the write lock
         self.blocked_check = (None, "")
         self.ended_at = _resolve_ended_at(self.led, run)
@@ -931,6 +932,9 @@ def _ended_unconfirmed(e):
     if (not e.ctx.led.get_kv(f"verify_failed:{e.run['id']}") and e.reason is None
             and _try_cline_nudge(e.ctx, e.run, e.kind, e.log, e.pol)):
         return False                            # alive again — finalized when it ends
+    if e.verify_wait:
+        e.rest = "verification interrupted without STATUS; saved work retained for retry"
+        return _ended_waiting(e)
     if e.ctx.led.get_kv(f"verify_failed:{e.run['id']}"):
         e.reason = "verify_failed"
     return _retry(e)
@@ -1412,6 +1416,8 @@ def finalize(ctx, run):
                     ending.blocked_check = _check_blocked_condition(ctx, project, n, rest)
             handler = next((handle for matches, handle in ENDINGS if matches(ending)), _retry)
             if handler is _ended_unconfirmed and not log.get("gateway_failed"):
+                ending.verify_wait = (verb is None and _verification_in_progress(log)
+                                      and _saved_work_ahead(run, pol, ending.saved) > 0)
                 ending.verify_green = _try_verify_fallback(ctx, run, pol, ending.saved, item, log, code)
                 if ending.verify_green is None:
                     _mark_stale(ending)
@@ -1598,11 +1604,27 @@ def _hold_model_unavailable(ctx, run, log=None):
                  run["project"], run["number"], tags="warning")
 
 
-def _did_no_work(ctx, run, log, code):
+def _verification_in_progress(log):
+    """Use the agent's final words, not earlier tool output or the issue prompt."""
+    text = ((log or {}).get("final") or (log or {}).get("last_text") or "")[-2000:]
+    return bool(re.search(
+        r"(?:wait(?:ing)?|rerunning|running|executing)[^.!?\n]{0,180}"
+        r"(?:verif\w*|tests?|runners?|background tasks?)"
+        r"|(?:tests?|verif\w*|runners?)[^.!?\n]{0,100}"
+        r"(?:still running|in the background|are (?:running|executing))",
+        text, re.IGNORECASE))
+
+
+def _saved_work_ahead(run, pol, saved):
+    return max(runner.commits_ahead(run["worktree"], pol.get("base", "main")),
+               (saved or {}).get("ahead", 0))
+
+
+def _did_no_work(ctx, run, log, code, *, verifying_saved_work=False):
     """An errored run whose worktree HEAD never moved from launch and holds no
     uncommitted changes did no work (mahler#1485): old green commits on the
     branch must not count as this run's build."""
-    if code == 0 and (log or {}).get("ok", True):
+    if verifying_saved_work or (code == 0 and (log or {}).get("ok", True)):
         return False
     head = ctx.led.get_kv(f"launch_head:{run['id']}")
     if not isinstance(head, str) or not head:
@@ -1636,12 +1658,11 @@ def _try_verify_fallback(ctx, run, pol, saved, item, log=None, code=0):
     verify_cmd = pol.get("verify")
     if not verify_cmd:
         return False
-    if _did_no_work(ctx, run, log, code):
+    ahead = _saved_work_ahead(run, pol, saved)
+    if _did_no_work(ctx, run, log, code,
+                    verifying_saved_work=ahead > 0 and _verification_in_progress(log)):
         ctx.say(f"{project}#{n}: run errored and made no new work — no verify-green fallback")
         return False
-    ahead = runner.commits_ahead(run["worktree"], base)
-    if ahead == 0 and saved and saved.get("ahead", 0) > 0:
-        ahead = saved["ahead"]
     if ahead == 0:
         ctx.say(f"{project}#{n}: no STATUS line, no commits ahead of {base} — failed attempt")
         return False

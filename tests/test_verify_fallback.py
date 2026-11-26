@@ -159,6 +159,42 @@ class VerifyFallbackTests(unittest.TestCase):
         self._errored_run("aaa", "aaa", dirty=True)
         self.assertEqual(self.led.item("x", 5)["state"], "verifying")
 
+    def _waiting_log(self):
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"event": "result", "result": {"status": "SUCCESS",
+                                 "response": "The full test suite passed. I'm waiting on the random and strict runners to finish."}}) + "\n")
+        with open(self.run["status_path"], "w") as fh:
+            fh.write("1")
+        self.led.upsert_item("x", 5, attempts=2)
+
+    def test_inherited_work_waiting_on_verify_can_fall_back(self):
+        self._waiting_log()
+        self.led.set_kv(f"launch_head:{self.run_id}", "aaa")
+        with mock.patch.object(runner, "head_sha", return_value="aaa"), \
+                mock.patch.object(runner, "worktree_dirty", return_value=False):
+            self.finalize(commits=3)
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 2)
+
+    def test_waiting_on_verify_red_preserves_attempts(self):
+        self._waiting_log()
+        self.finalize(commits=2, verify_ok=False)
+        self.assertEqual(self.led.item("x", 5)["state"], "waiting")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 2)
+
+    def test_waiting_on_verify_skipped_with_snapshot_preserves_attempts(self):
+        self._waiting_log()
+        self.cfg["projects"]["x"]["verify"] = ""
+        self.finalize(commits=0, saved_ahead=2)
+        self.assertEqual(self.led.item("x", 5)["state"], "waiting")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 2)
+
+    def test_waiting_without_saved_work_still_costs_attempt(self):
+        self._waiting_log()
+        self.finalize(commits=0)
+        self.assertEqual(self.led.item("x", 5)["attempts"], 3)
+        self.assertNotEqual(self.led.item("x", 5)["state"], "waiting")
+
     def test_no_commits_ahead_is_failed_attempt(self):
         """No status line, 0 commits ahead and no uncommitted snapshot → failed attempt, as today."""
         self._write_log_no_status()
