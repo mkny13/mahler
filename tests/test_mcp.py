@@ -141,3 +141,43 @@ class DiscussionMCPTests(unittest.TestCase):
         self.assertTrue(json.loads(results[-1]['result']['content'][0]['text'])['confirmed'])
         self.assertEqual(led.q('SELECT * FROM leases'), [])
         self.assertEqual(led.q('SELECT * FROM runs'), [])
+
+
+class MalformedRequestTests(unittest.TestCase):
+    CASES = [('invalid json', '{bad json}', -32700), ('array', '[]', -32600),
+             ('null', 'null', -32600), ('string', '"text"', -32600),
+             ('number', '1', -32600), ('bool', 'true', -32600)]
+
+    def run_entry(self, kind, raw):
+        led = Ledger(':memory:')
+        self.addCleanup(led.close)
+        valid = json.dumps({'jsonrpc': '2.0', 'id': 7, 'method': 'initialize'})
+        notification = json.dumps({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+        stdin = StringIO('\n'.join([raw, '', notification, valid]) + '\n')
+        stdout = StringIO()
+        before = (led.q('SELECT * FROM leases'), led.q('SELECT * FROM runs'))
+        with patch.object(sys, 'stdin', stdin), patch.object(sys, 'stdout', stdout):
+            if kind == 'serve':
+                serve({'defaults': {}, 'projects': {}}, led)
+            else:
+                from mahler.mcp import serve_discussion
+                binding = dict(project='p', repo='o/r', account='personal', engine='claude')
+                cfg = {'defaults': {}, 'projects': {'p': {'repo': 'o/r', 'account': 'personal'}}}
+                sid = led.create_chat_session(**binding)['id']
+                turn = led.submit_chat_turn(sid, 'request', 'Hi', **binding)['id']
+                before = (led.q('SELECT * FROM leases'), led.q('SELECT * FROM runs'))
+                serve_discussion(cfg, led, sid, turn, led.claim_chat_turn(turn))
+        after = (led.q('SELECT * FROM leases'), led.q('SELECT * FROM runs'))
+        self.assertEqual(before, after)
+        return [json.loads(line) for line in stdout.getvalue().splitlines()]
+
+    def test_malformed_requests_get_protocol_errors_and_server_continues(self):
+        for kind in ('serve', 'serve_discussion'):
+            for name, raw, code in self.CASES:
+                with self.subTest(kind=kind, case=name):
+                    out = self.run_entry(kind, raw)
+                    self.assertEqual(len(out), 2)
+                    self.assertEqual(out[0], {'jsonrpc': '2.0', 'id': None,
+                                              'error': {'code': code, 'message': out[0]['error']['message']}})
+                    self.assertEqual(out[1]['id'], 7)
+                    self.assertIn('serverInfo', out[1]['result'])

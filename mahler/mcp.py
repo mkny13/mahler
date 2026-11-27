@@ -4,6 +4,19 @@ import sys
 from . import config
 from .gh import project_client
 
+def _decode_request(line):
+    """Return (request, error_response); exactly one is None."""
+    try:
+        req = json.loads(line)
+    except (ValueError, TypeError):
+        return None, {"jsonrpc": "2.0", "id": None,
+                      "error": {"code": -32700, "message": "Parse error"}}
+    if not isinstance(req, dict):
+        return None, {"jsonrpc": "2.0", "id": None,
+                      "error": {"code": -32600, "message": "Invalid Request"}}
+    return req, None
+
+
 def serve(cfg, led):
     def send(msg):
         sys.stdout.write(json.dumps(msg) + "\n")
@@ -12,11 +25,11 @@ def serve(cfg, led):
     for line in sys.stdin:
         if not line.strip():
             continue
-        try:
-            req = json.loads(line)
-        except json.JSONDecodeError:
+        req, error = _decode_request(line)
+        if error:
+            send(error)
             continue
-            
+
         if req.get("method") == "initialize":
             send({
                 "jsonrpc": "2.0",
@@ -224,11 +237,14 @@ def serve_discussion(cfg, led, session_id, turn_id, worker_token):
 
     discussion = DiscussionTools(cfg, led, session_id, turn_id, worker_token)
     for line in sys.stdin:
-        try:
-            req = json.loads(line)
-        except (ValueError, TypeError):
+        if not line.strip():
             continue
-        if not isinstance(req, dict) or 'id' not in req:
+        req, error = _decode_request(line)
+        if error:
+            sys.stdout.write(json.dumps(error) + '\n')
+            sys.stdout.flush()
+            continue
+        if 'id' not in req:
             continue
         response = {'jsonrpc': '2.0', 'id': req['id']}
         try:
