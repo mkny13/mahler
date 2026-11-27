@@ -93,8 +93,10 @@ launchctl bootout gui/$(id -u)/local.mahler
 
 ## Configure a project
 
-Nothing is managed until a project explicitly has `enabled = true`. Start with
-the safe, disabled example in `config.example.toml`:
+Nothing is managed until a project explicitly has `enabled = true`. The installer
+copies `config.example.toml` to `~/.mahler/config.toml`; its `[projects.example]` entry
+ships disabled. Add your own entry (or edit that one) with a real `repo` and `path`, and
+set `enabled = true` only once they are correct:
 
 ```toml
 [projects.myapp]
@@ -105,7 +107,8 @@ max_parallel = 1
 verify = "python3 -m unittest discover -s tests"
 ```
 
-Then create Mahler's labels and inspect a dry scheduler pass:
+Then create Mahler's labels (the project must be enabled and `gh` authenticated) and
+inspect a dry scheduler pass:
 
 ```bash
 mahler labels myapp
