@@ -201,8 +201,7 @@ missing one is a blocking finding.
    Don't re-raise a note.
 7. Each blocker gives file, scenario, why normal, and consequence. One reviewer, one verdict: pass
    if nothing clears the bar.
-9. Set each finding’s JSON `severity` field to exactly `"blocking"` or `"follow-up"`;
-   only blockers fail review. Do not use high/medium/low/critical/info as severity values.
+9. JSON `severity` must be `"blocking"` or `"follow-up"`; only blockers fail review.
    The conductor files follow-ups before merge.
    PR metadata-only notes stay outside `findings`.
    Use category `scope`, `spec`, `behavior`, `security`, `data-loss`, `hardening`, or
@@ -210,9 +209,8 @@ missing one is a blocking finding.
    copied from the issue's Done-when section (including its bullet/checkbox).
    Honor acceptance criteria. Fixed earlier findings are not current
    findings; include only still-reproducible blockers and actionable follow-ups.
-10. End with one status line and one-line JSON, including both classes if mixed.
-    Every finding must use `"severity":"blocking"` or `"severity":"follow-up"`. REVIEW-FAIL
-    exactly when a blocking finding remains; otherwise REVIEW-PASS. Each finding has nonempty
+10. End with one STATUS line and one-line JSON; `severity`: `"blocking"`/`"follow-up"`.
+    REVIEW-FAIL iff any blocker remains; otherwise REVIEW-PASS. Each finding has nonempty
     `severity`, `category`, `location` (file:line), `scenario` (trigger/evidence), and
     `consequence`. No findings: `STATUS: REVIEW-PASS {"findings":[]}`.
 11. Stop only for a decision genuinely only the owner can make, and end with
