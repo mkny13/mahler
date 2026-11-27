@@ -26,7 +26,9 @@ you are:
 Mahler's own issues are worked by Mahler (ROADMAP Phase B). So:
 
 - **The daemon runs from `~/.mahler/app`, a separate clone pinned to a known-good commit.**
-  Never edit anything under `~/.mahler/` from a task — changes reach the daemon only
+  Never edit live state or the daemon installation under `~/.mahler/` from a task.
+  Authorized source changes inside the assigned `~/.mahler/worktrees/` task worktree
+  are allowed; never touch other worktrees or live state. Changes reach the daemon only
   through a merge to `main` with green CI and passing unit tests. The launch-failure
   circuit breaker pauses new launches, allowing periodic canaries; a global breaker
   triggers immediate rollback when `launch_ok` names a different, launch-proven commit.
@@ -90,34 +92,6 @@ Never switch branches in the shared primary checkout. Finish with `mahler ship` 
 linked manual merge protocol; never leave an untracked open PR.
 Use `mahler next-id mahler <prefix>` for shared sequential IDs; never invent one.
 
-## Layout
+## Architecture
 
-- `mahler/`:
-  - `ledger.py`: SQLite leases, runs, usage, events
-  - `scheduler.py`: the tick's entry — `Ctx`, the lock, the order of the passes
-  - one module per pass: `watchdog.py` (process health, heartbeats), `sync.py`
-    (GitHub in, labels out), `finalize.py` (every exit is a handoff),
-    `ship.py` (the conductor's PR/CI/merge pass), `tick.py` (maintenance,
-    lease expiry, scheduling, `start`), `usage.py` (quota readings, D23 burst),
-    `platform_audit.py` (D20's periodic self-audit of Mahler's own platform
-    tier/capability assumptions, mahler#206 — not a managed-project pass)
-  - `runner.py`: worktrees, launch, snapshot — `prompt.py` writes what a run is told
-  - `router.py`: quota policy
-  - `platforms.py`: CLI adapters and usage readers
-  - `gh.py`: GitHub — the conductor's push/PR/CI/merge machinery (D18)
-  - `cli.py`: the command line
-  - `console/`: the operator console (DESIGN D27) — `state.py` (everything it shows,
-    copy included), `page.py` (phone and desktop layouts), `actions.py` (its writes),
-    `console.css`, `console.js`; the spec and screenshots are in `docs/console/`
-  - the rest: `config.py` (paths and config), `notify.py` (ntfy pings), `serve.py`
-    (serves the console), `mcp.py` (MCP server), `digest.py` (daily digest),
-    `janitor.py` (stale worktree/old-ref cleanup), `backup.py` (database backups),
-    `presence.py` (human-session detection), `redact.py` (credential redaction),
-    `version.py` (version info)
-- `recipes/`: autonomous role prompts (`sort.md`, `build.md`, `fix.md`, and independent
-  review in `review.md`); their STATUS-line contracts are parsed by `platforms.status_line`.
-  `console_walkthrough.md` is a manually triggered console UAT walkthrough, ending in a
-  pass/fail report rather than an autonomous STATUS line.
-- `sdk_runner/`: the Agent SDK runner (`mahler-sdk-run`) behind `kind = "agent-sdk"`, the
-  API-credits harness (D41). Hand-installed: `uv tool install ./sdk_runner`.
-- `launcher/`: the stable launcher, launchd plist and installer.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the shipped components and source map.
