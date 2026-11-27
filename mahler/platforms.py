@@ -135,6 +135,9 @@ AUTH_DENIED_WORDS = (
     # Cline's expired login (mahler#1485): {"type":"error","message":
     # "cline requires re-authentication."}. Fixed machine-wide by `cline auth`.
     "requires re-authentication",
+    # Kilo expired login (mahler#1775).
+    "your authentication token is invalid",
+    "please sign in again",
     # Copilot with no usable login falls back to `gh` and validates that
     # token against /user (mahler#1506). Fixed by `copilot login`.
     "failed to fetch github cli user login",
@@ -261,6 +264,27 @@ def probe_cline(pconf=None, env=None):
             return None
     out = (r.stdout or "") + (r.stderr or "")
     if is_auth_denied(out):
+        return False
+    return True if r.returncode == 0 else None
+
+
+
+def probe_kilo(pconf=None, env=None):
+    """Bounded login check: True works, False needs auth, None is unknown."""
+    exe = kilo_exe()
+    if not exe:
+        return None
+    with tempfile.TemporaryDirectory() as d:
+        argv = [exe, "run", "Reply with the single word OK.",
+                "--dir", d, "--auto", "--format", "json"]
+        if (pconf or {}).get("model"):
+            argv += ["-m", pconf["model"]]
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=60,
+                               env=env, stdin=subprocess.DEVNULL)
+        except (subprocess.SubprocessError, OSError):
+            return None
+    if is_auth_denied((r.stdout or "") + (r.stderr or "")):
         return False
     return True if r.returncode == 0 else None
 
