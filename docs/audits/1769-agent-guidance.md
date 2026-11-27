@@ -95,3 +95,20 @@ No pre-existing assertions were removed or relaxed.
 
 Final required check results are recorded below after execution. All evidence is
 local/headless; no GUI, production or protected-service verification is required.
+
+Final results (Python 3.14.10; all commands exited 0):
+
+- `python3 -m mahler.repo_guard`: passed.
+- `python3 -m unittest discover -s tests`: 4,018 tests, 375.271s, OK (2 existing skips).
+- `python3 tests/run_random.py`: 4,018 tests, 371.359s, OK (2 existing skips);
+  seed `1063296602`.
+- `python3 -X dev tests/run_strict.py`: 4,018 tests, 384.878s,
+  OK (2 existing skips).
+- Symlink target, 97-line effective instruction count, existing architecture target
+  and Markdown link: passed. `git diff --check`: passed.
+- Fixed-substitution rendered bytes: build 10,379; fix 10,494; review 10,497
+  (unchanged ceiling 10,500). Focused recipe suite: 75 tests, OK.
+
+No tests were disabled for this patch. Existing suite skips remain skips, not passes;
+no additional live/GUI coverage is claimed or required. Conductor-owned shipping and
+independent review remain outstanding by design.
