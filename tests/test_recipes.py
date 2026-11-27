@@ -1054,6 +1054,13 @@ class DesktopGateRecipeTests(unittest.TestCase):
             "review": prompt.render("review", pr=1, **common),
         }
 
+    def test_review_deferral_requires_gate_marker_not_child_exit(self):
+        text = " ".join(self.rendered()["review"].split())
+        rule = text.split("13. **GUI-driving work", 1)[1].split("14.", 1)[0]
+        self.assertRegex(rule, r"Only .*`GATE-DENIED`.*means deferral")
+        self.assertRegex(rule, r"command that .*independently exits 75 is a failure, not a skip")
+        self.assertNotIn("Exit 75 means skip", rule)
+
     def test_wrapper_deferral_and_ci_evidence_contract(self):
         for name, raw in self.rendered().items():
             text = " ".join(raw.split())
