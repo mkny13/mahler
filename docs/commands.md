@@ -6,32 +6,40 @@ Mahler automates the codebase directly from GitHub issues. This reference docume
 
 ## Commands
 
-Drop these commands as a comment on an issue to instruct the conductor. They take effect on the next tick.
+Drop these commands as a comment on an issue or PR to instruct the conductor. They take effect on the next tick.
 
 - `/mahler go`
-  Moves a parked or failed issue to `ready`. The conductor will pick it up and assign it to an agent based on quota availability.
+  Resumes work on a parked, waiting, or failed item. If the item has an open PR, it moves the state to `verifying` to resume verification, CI tracking, and review; otherwise it moves the issue to `ready` for quota-based agent scheduling. Clears active waits, clears launch failure records, resets the review cycle, and resets attempt and escalation counters (`attempts=0`, `setup_fails=0`, `esc_tier=0`, `esc_fails=0`).
 
-- `/mahler park` (alias: `/mahler stop`)
-  Pauses work on an issue. Moves it to `parked`. Agents working on it will be interrupted. Useful when you want Mahler to ignore an issue for now. Can also be commented on an open PR to stop active runs and park the item.
+- `/mahler park`
+  Pauses work on an issue. Moves the state to `parked`, clears active waits, and interrupts any active agent runs on that issue. Can also be commented on an open PR to stop active runs and park the item.
+
+- `/mahler stop`
+  Accepted alias for `/mahler park` with identical behavior: transitions the issue or PR to `parked`, clears active waits, and interrupts active runs.
 
 - `/mahler platform <name>`
-  Forces Mahler to use a specific agent platform (e.g., `agy-gemini`, `claude`, `codex`, `copilot`) for the next run. This adds a `platform:<name>` label. This overrides the automatic quota-based routing.
+  Forces Mahler to use a specific agent platform (e.g., `agy-gemini`, `claude`, `codex`, `copilot`) for subsequent runs by applying the `platform:<name>` label on GitHub. Overrides automatic quota-based routing. If the target platform is configured with `approval = true`, only the repository owner can approve and pin that platform.
 
-- `/mahler platform auto` (or `/mahler platform none`)
-  Clears an existing platform pin and restores normal quota-based routing.
+- `/mahler platform auto`
+  Clears an existing platform pin (removes any `platform:*` label on GitHub) and restores normal automatic quota-based routing.
+
+- `/mahler platform none`
+  Clears an existing platform pin (removes any `platform:*` label on GitHub) and restores normal automatic quota-based routing (equivalent to `/mahler platform auto`).
 
 Merge undo is available from the operator console: it creates a revert change
 and sends it through the normal CI-gated conductor pipeline. There is currently
 no `/mahler undo` comment command.
 
-## Replying to `NEEDS-YOU`
+## Replying to `NEEDS-YOU` and Plain Answers
 
-When an agent needs human input (e.g. to make a product decision, or provide credentials), it stops and puts the issue into the `needs-you` state.
+When an agent needs human input (e.g. to make a product decision, or provide credentials), it stops and puts the issue into the `needs_you` state.
 
-To reply, simply **add a comment on the issue with your answer**. Mahler will
-automatically read the comment and move the item back to `inbox`, so a sorting
-run can incorporate the answer before work resumes. The console provides the
-same flow with a 60-second Undo window.
+To reply, simply **add a comment on the issue with your answer**. Mahler automatically distinguishes plain answers from `/mahler` commands:
+
+- **On a `needs_you` issue**: Mahler reads the comment and moves the item back to `inbox` with reason "you answered — re-sorting", so a sorting run can incorporate the answer before work resumes.
+- **On a `needs_you` PR**: When a non-convergent review question asks the owner for adjudication, commenting `merge with follow-ups` transitions the item to `verifying` to merge the PR and file follow-ups.
+- **On a `failed` issue**: A plain answer comment automatically resumes the item (identical to `/mahler go`), moving it to `ready` (or `verifying` if a PR exists) and resetting failure counters.
+- **Console integration**: The operator console provides the same reply and resume actions with a 60-second Undo window.
 
 ## Review Adjudication and Precision (D33)
 

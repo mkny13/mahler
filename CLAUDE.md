@@ -13,10 +13,10 @@ you are:
 - **A Mahler run** (your prompt came from a recipe, and `MAHLER_ISSUE` is set): implement,
   verify and commit locally, then end with a STATUS line. Use only the admitted issue context
   supplied in the prompt; do not fetch raw issue comments or fall back to ambient human GitHub
-  credentials. The conductor snapshots and pushes the branch, opens the PR, watches CI,
-  coordinates independent review and merges (DESIGN D18, D46, D47). Reserve `NEEDS-YOU` for
-  `product`, `money`, `credentials`, `data-policy` or `irreversible` owner decisions;
-  conductor and external waits use `waiting` instead (DESIGN D52).
+  credentials. Runs hold no GitHub push or write token; the conductor snapshots and pushes
+  the branch, opens the PR, watches CI, coordinates independent review and merges (DESIGN D18,
+  D46, D47). Reserve `NEEDS-YOU` for `product`, `money`, `credentials`, `data-policy` or
+  `irreversible` owner decisions; conductor and external waits use `waiting` instead (DESIGN D52).
 - **A chat session** (Claude Code, Codex or any other interactive agent): nothing picks up
   your PR unless you hand it over. Finish with `mahler ship` or merge it yourself. See
   "Working on an issue by hand" below. A PR you open and walk away from stays open.
