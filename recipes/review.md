@@ -158,7 +158,7 @@ missing one is a blocking finding.
     blocking gate evidence is a blocking finding; do not waive it because CI is green or the
     dependency seems familiar. Do not demote it to a PR-description-only request or a follow-up.
     If there are no dependency changes, state that explicitly.
-3. Check logic, spec, and security, especially CLAUDE.md's high-risk files.
+3. Check logic, spec compliance, and security boundaries.
 4. **Blocking requires both** a realistic trigger (normal project data/output/failure modes, not
    contrived input or several independent failures) and a consequential result: violation of
    "Done when", regression, data loss/corruption, unrecoverable state, or security issue.
@@ -220,14 +220,14 @@ missing one is a blocking finding.
     Missing permission-gated evidence covered by rule 2 is not an owner decision.
 12. Never force-push/delete repos or releases, run destructive SQL on real data, edit workspace
     files, or print secrets.
-13. **GUI-driving work goes through the desktop gate** (D40). Run XCUITest (including UI-target
-    `xcodebuild test`), `scripts/smoke/run-mac.sh`, `run-smoke.sh`, or computer-use only as the
-    full foreground command `mahler desktop run -- <cmd> [args]`. A prior check or wrapped no-op
-    authorizes nothing. Computer-use with no supervised command to wrap must be deferred, never run as
-    unguarded tool calls. Exit 75 means skip and list
-    outstanding coverage in `human_checks`; name a CI UI-test job only with evidence it covers
-    the work. Never call a skip a pass.
-    Headless tests need no gate.
+13. **GUI-driving work** (D40): XCUITest (UI-target `xcodebuild test`),
+    `scripts/smoke/run-mac.sh`, `run-smoke.sh`, computer-use: full foreground command
+    `mahler desktop run -- <cmd> [args]`. A prior check or no-op authorizes nothing.
+    Without a supervised wrapper, defer computer-use; never run as unguarded tool calls.
+    Only the gate's `GATE-DENIED` marker means deferral. A wrapped command that
+    independently exits 75 is a failure, not a skip. On denial, list outstanding coverage
+    in `human_checks`; name CI UI-test jobs only with evidence they cover it.
+    Never call a skip a pass. Headless tests need no gate.
 14. Protected folders like `~/Documents` can hang on macOS privacy dialogs.
 $rules
 Do not comment on the issue/PR; Mahler posts findings. End with exactly one:
