@@ -125,6 +125,12 @@ def parse(verdict, text, issue_body=""):
         if not isinstance(f, dict) or any(not isinstance(f.get(k), str) or not f[k].strip()
                 for k in ("severity", "category", "location", "scenario", "consequence")):
             raise ValueError("incomplete finding")
+        # Some reviewers use severity for impact and class for disposition.
+        # A declared blocker must never be downgraded to make PASS fit.
+        if f.get("class") == "blocking" or f["severity"] in {"high", "critical"}:
+            f["severity"] = "blocking"
+        elif f["severity"] in {"low", "medium", "info"}:
+            f["severity"] = "follow-up"
         if f["severity"] not in {"blocking", "follow-up"}:
             raise ValueError("unknown severity")
         if f["category"] not in {"scope", "spec", "behavior", "security", "data-loss", "hardening", "testing"}:

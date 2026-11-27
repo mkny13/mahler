@@ -1510,6 +1510,8 @@ class NamedFailureReleaseTests(unittest.TestCase):
 
     def test_live_pass_releases_only_named_failures_once(self):
         self.prepare()
+        self.led.upsert_item("app", 7, pr=82)
+        self.led.upsert_item("app", 12, state="parked")
         with mock.patch.object(post_merge, "_advance"):
             self.tick()
         self.assertEqual(self.led.item("app", 5)["state"], "failed")
@@ -1521,10 +1523,11 @@ class NamedFailureReleaseTests(unittest.TestCase):
         self.led.update_post_merge_check("mahler", 1, SHA, expected_phase="smoke",
             phase="smoke", status="PASS", evidence_ref=str(report))
         self.tick()
-        for n, state in ((5, "ready"), (6, "failed"), (7, "ready"),
+        for n, state in ((5, "ready"), (6, "failed"), (7, "verifying"),
                          (8, "ready"), (9, "ready"), (10, "done"), (11, "shipped")):
             self.assertEqual(self.led.item("app", n)["state"], state)
             self.assertEqual(self.led.item("app", n)["attempts"], 0 if n in (5, 7, 8) else 3)
+        self.assertEqual(self.led.item("app", 12)["state"], "parked")
         self.assertEqual(self.app_gh.comment_create.call_count, 3)
         for call in self.app_gh.comment_create.call_args_list:
             self.assertTrue(call.args[1].startswith("<!-- mahler:agent -->"))
@@ -1534,6 +1537,7 @@ class NamedFailureReleaseTests(unittest.TestCase):
         self.led.upsert_item("app", 5, state="failed")
         self.tick()
         self.assertEqual(self.led.item("app", 5)["state"], "failed")
+        self.assertEqual(self.led.item("app", 12)["state"], "parked")
         self.assertEqual(self.app_gh.comment_create.call_count, 3)
         self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='named_failures_released'")), len(events))
 

@@ -652,7 +652,7 @@ def _classified_review(e, verdict, prepared, defer):
         return False  # A late finalization must not overwrite a newer review.
     valid, findings = prepared if prepared is not None else _prepare_review(e, verdict)
     if not valid:
-        _review_inconclusive(e, count=False)   # parse-rejected: not the reviewer's failure
+        _review_inconclusive(e)   # Malformed verdicts must also exhaust the retry budget.
         return False
     review.remember(e, info, findings)
     _update_review_kv(e, run_id=e.run["id"], classified=findings)
@@ -710,7 +710,7 @@ def _inconclusive_wait(e, reason, sha):
                resume="verifying", wake={"sha": sha})
 
 
-def _review_inconclusive(e, count=True):
+def _review_inconclusive(e):
     """No usable verdict (crash, timeout, quota, an unmatched STATUS verb):
     clear any stale kv record so ship.py's gate starts a fresh review run
     next tick, instead of either merging on a verdict never reached or
@@ -739,13 +739,13 @@ def _review_inconclusive(e, count=True):
         except ValueError:
             seen = []
         if e.run["id"] not in [r.get("run_id") for r in seen]:
-            if count and getattr(e, "reason", None) not in (*CAPACITY_STOPS, "silent"):
+            if getattr(e, "reason", None) not in (*CAPACITY_STOPS, "silent"):
                 seen.append({"run_id": e.run["id"], "platform": e.run["platform"]})
                 e.led.set_kv(key, json.dumps(seen))
     e.led.set_kv(_review_kv_key(e.project, e.number), None)
-    if not count or getattr(e, "reason", None) in (*CAPACITY_STOPS, "silent"):
-        # Launch/credit/quota failures and parse-rejected verdicts say nothing about
-        # the PR head; they must not push it toward the cap.
+    if getattr(e, "reason", None) in (*CAPACITY_STOPS, "silent"):
+        # Launch/credit/quota failures say nothing about the PR head;
+        # they must not push it toward the cap.
         e.set_state("verifying", f"review run ended without a verdict ({e.outcome}) — retrying")
         return True
     if len(seen) == REVIEW_INCONCLUSIVE_CAP and sha:

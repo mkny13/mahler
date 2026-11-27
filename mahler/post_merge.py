@@ -392,7 +392,7 @@ def _release_named_failures(ctx, project, number, item):
         target_key = f"{key}:{target}:{n}"
         failure = ctx.led.item(target, n)
         if (ctx.led.get_kv(target_key) or not failure
-                or failure["state"] not in ("failed", "needs_you")):
+                or failure["state"] not in ("failed", "needs_you", "parked")):
             continue
         gh = ctx.gh(target)
         marker = f"<!-- mahler:named-fix {project}#{number} -->"
