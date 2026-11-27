@@ -15,6 +15,35 @@ from mahler.ledger import Ledger, iso
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
 
 
+class SeverityNormalizationTests(unittest.TestCase):
+    def test_reviewer_severity_aliases(self):
+        for severity, extra, expected in (
+            ("high", {"class": "blocking"}, "blocking"),
+            ("critical", {}, "blocking"), ("high", {}, "blocking"),
+            ("low", {}, "follow-up"), ("medium", {}, "follow-up"),
+            ("info", {}, "follow-up"),
+            ("low", {"class": "blocking"}, "blocking"),
+            ("unknown", {"class": "blocking"}, "blocking"),
+        ):
+            with self.subTest(severity=severity, extra=extra):
+                finding = dict(severity=severity, category="behavior", location="game.ts:613",
+                               scenario="End season with unresolved set piece",
+                               consequence="Set piece lost", **extra)
+                verdict = "fail" if expected == "blocking" else "pass"
+                result = review.parse(verdict, json.dumps({"findings": [finding]}))
+                self.assertEqual(result, [{**finding, "severity": expected}])
+                with self.assertRaisesRegex(ValueError, "contradicts"):
+                    review.parse("pass" if verdict == "fail" else "fail",
+                                 json.dumps({"findings": [finding]}))
+
+    def test_unknown_severity_remains_rejected(self):
+        for severity in ("unknown", [], None):
+            with self.subTest(severity=severity), self.assertRaises(ValueError):
+                review.parse("pass", json.dumps({"findings": [dict(
+                    severity=severity, category="behavior", location="game.ts:613",
+                    scenario="A scenario", consequence="A consequence")]}))
+
+
 class TestMetadataFollowups(unittest.TestCase):
     def test_file_followups_skips_pr_metadata_findings(self):
         led = Ledger(":memory:")
