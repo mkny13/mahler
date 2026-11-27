@@ -1,12 +1,18 @@
 # Mahler — Design
 
-Status: design agreed 2026-09-12; the system is built and running. This is the
+Status: design agreed 2026-09-12; implementation is shipped in this repository.
+Live installation and enablement are not established by this record. This is the
 decision record, so older sections sometimes describe a target that later decisions
 amend. [ARCHITECTURE.md](ARCHITECTURE.md) maps the system as shipped, shipped status lives
 in [ROADMAP.md](ROADMAP.md), and setup/operation lives in [README.md](README.md).
 Gustav Mahler was a conductor. This tool conducts: it decides who plays which part, and when.
 
 ---
+
+The decision headings retain their historical IDs through D52. Allocated numbers
+D32, D37, D38, D42, D48 and D49 have no checked-in decision heading; this record
+does not invent decisions to fill those gaps. Machine observations retain their
+original dates and are not current configuration attestations.
 
 ## The one-page version
 
@@ -222,6 +228,12 @@ All of it is glue between adopted parts.
   "Backlog moved to GitHub Issues" note into TASKS.md and CLAUDE.md.
 
 ### D5 — Mahler's own state
+
+**Current state (2026-11-27):** the table names below are the original schema
+proposal. The shipped schema in `mahler/ledger.py` and the inventory in
+[ARCHITECTURE.md](ARCHITECTURE.md#persistent-state) supersede it. The ledger now
+also holds discussion sessions, completion/review evidence, credit reservations
+and scheduling records; losing it loses more than leases and run history.
 
 - SQLite in WAL mode at `~/.mahler/mahler.db`, on the Mac mini's **internal** disk. If the
   external SSD unmounts, Mahler notices, pauses those projects, and can still tell you why.
@@ -644,6 +656,12 @@ count as "unknown", and the router treats unknown as "over soft". The probe show
 doesn't rely on that and stops on its own thresholds regardless.
 
 ### D9 — Handoff protocol
+
+**Current state (2026-11-27):** D18 and `mahler/finalize.py` specialize this
+original universal handoff model: build/fix runs use code snapshots and issue
+handoffs; sort/review have separate finalizers. The tick supervises yield and
+termination. Mahler-aware pickup skills below remain a target, not a shipped
+MCP tool named `mahler_handoff` (the local MCP tool is `handoff`).
 
 - **Checkpoint continuously:** every build/fix recipe says to commit after each meaningful step and
   at least every 10 minutes. The conductor snapshots and pushes at handoff (D18).
@@ -1216,6 +1234,12 @@ are best-effort and never gate finalization or prompt construction.
 
 ### D12 — Safety: checkpoints, rollback, data, backups
 
+**Current state (2026-11-27):** the data rules below preserve the safety target.
+`mahler/backup.py` ships configured PostgreSQL backups and verified ledger backups,
+not D1 exports, staging seeding, mandatory pre-deploy receipts or unattended
+restore drills. Offsite coverage and the example disk path are historical machine
+observations. Console revert PRs are shipped; platform rollback remains planned.
+
 **Code is always reversible.**
 
 - Every change is one squash-merge linked to its issue.
@@ -1325,6 +1349,12 @@ are best-effort and never gate finalization or prompt construction.
   rebase/merge/cherry-pick in progress and only when the fetched base is a strict descendant.
 
 ### D14 — Stack and runtime
+
+**Current state (2026-11-27):** the control plane remains standard library.
+The optional `sdk_runner/` has separately installed dependencies (D41/D43).
+The existing-gh-auth description below is historical: D25/D26/D47 and
+`mahler/gh.py` select project-bound CLI, App or PAT identity; required scoped
+identities fail closed. Source checkout paths are examples, not requirements.
 
 - **Hub:** an always-on Mac. The canonical installation is the Mac mini; D24 adds remote lease
   coordination for an explicitly shared project without replicating the scheduler database.
