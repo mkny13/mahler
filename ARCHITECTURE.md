@@ -9,7 +9,8 @@ records that explain why. It does not repeat them:
 - [README.md](README.md) covers setup and operation.
 - [CLAUDE.md](CLAUDE.md) and [AGENTS.md](AGENTS.md) are the rules agents follow.
 
-Reconciled against the committed 2026-11-22 drift audits:
+Reconciled with repository code, CLI help and hermetic tests on 2026-11-27.
+The committed 2026-11-22 drift audits provide earlier evidence:
 [lifecycle](docs/audits/1670-lifecycle-state.md) supplies the state/tick corrections;
 [execution and shipping](docs/audits/1670-execution-shipping.md) supplies run and merge evidence;
 [routing and accounts](docs/audits/1670-routing-quota-accounts.md) supplies credential and quota boundaries;
@@ -74,6 +75,10 @@ and evidence (DESIGN D4, D5, D43).
   `worktree_root` can move it.
 - **`~/.mahler/app`**, plus the launcher's `known_good`, `launch_ok` and `bad_sha` files.
 - **Snapshot refs** `mahler/snapshot/*` on the remote, for work saved at the end of a run.
+
+These are default paths; `MAHLER_HOME` relocates the state root. Private GitHub
+credential caches and per-run credential/config directories also live under that root
+(`github_app.py`, `runner.py`); they are runtime secrets, never repository artifacts.
 
 The daemon's database and config are never edited by a task. Tests use `Ledger(':memory:')`
 or temp dirs.
@@ -176,6 +181,21 @@ item tracks draws a "PR nobody is shipping" ping.
 - **MCP** over stdio is a privileged local operator API with seven tools, separate from
   the restricted discussion entry point.
 - **ntfy** pings and a daily digest.
+
+### CLI command inventory
+
+Top-level names accepted by `mahler --help` and its parser (2026-11-27):
+
+- `desktop`, `tick`, `status`, `events`, `scorecard`, `review-adjudicate`.
+- `capacity`, `gateway`, `serve`, `hooks`, `warmup`, `usage`.
+- `claim`, `heartbeat`, `ship`, `release`, `lease-check`, `ledger-remote-op`.
+- `next-id`, `prioritize`, `atlas`, `pause`, `resume`, `unstick`.
+- `unhold`, `add`, `notify`, `labels`, `backup`, `restore-ledger`.
+- `backfill-usage`, `history`, `log`, `mcp`, `peak`, `version`.
+- `console-walkthrough`.
+
+The gateway and ledger-remote-op entries are internal transport commands, not
+operator workflows. Subcommands and flags are described by each command’s help.
 
 ## Trust boundaries
 
