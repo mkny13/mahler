@@ -468,7 +468,7 @@ def _quota_usage_state(led, name, pconf, burst_lines=None):
         # already making progress keeps going.
         until = hold_until
         if led.get_kv(f"hold_reason:{name}") == "auth":
-            fix = "copilot login" if pconf.get("kind") == "copilot" else "cline auth"
+            fix = {"copilot": "copilot login", "kilo": "kilo auth"}.get(pconf.get("kind"), "cline auth")
             return "blocked", (f"login expired: run `{fix}`, then `mahler usage --probe` "
                                "or `mahler unhold " + name + "`")
         if led.get_kv(f"hold_reason:{name}") == "no_credit":
