@@ -2921,18 +2921,40 @@ class ReviewInconclusiveTests(unittest.TestCase):
         self.assertEqual(pings, [])
         self.assertEqual(len(json.loads(led.get_kv("reviewinconclusive:x#5:sha1"))), 4)
 
-    def test_credit_failures_and_parse_rejects_do_not_count(self):
+    def test_parse_rejected_verdicts_escalate_then_wait(self):
+        for verb in ("REVIEW-PASS", "REVIEW-FAIL"):
+            with self.subTest(verb=verb):
+                led = Ledger(":memory:")
+                self.addCleanup(led.close)
+                led.upsert_item("x", 5, title="t", state="verifying", pr=9)
+                key = finalize._review_kv_key("x", 5)
+                for rid in range(1, finalize.REVIEW_INCONCLUSIVE_CAP + 2):
+                    led.set_kv(key, json.dumps({"run_id": rid, "sha": "sha1", "pr": 9}))
+                    e, states, pings = self.ending(led, rid)
+                    e.item = led.item("x", 5)
+                    e.outcome = verb
+                    e.rest = '{"findings": [{"severity": "unclassifiable"}]}'
+                    e.ctx = mock.Mock()
+                    e.ctx.gh.return_value.issue_body.return_value = ""
+                    finalize.REVIEW_OUTCOMES[verb](e)
+                    self.assertIsNone(led.get_kv(key))
+                    self.assertEqual(pings, [])
+                    if rid == finalize.REVIEW_INCONCLUSIVE_CAP:
+                        self.assertEqual(led.get_kv("reviewescalate:x#5:sha1"), "1")
+                self.assertEqual(led.item("x", 5)["state"], "waiting")
+                self.assertEqual(json.loads(led.get_kv("wait:x#5"))["cause"], "review_inconclusive")
+                self.assertEqual(len(json.loads(led.get_kv("reviewinconclusive:x#5:sha1"))), 4)
+                self.assertIsNone(led.get_kv("reviewinconclusive:x#5:sha2"))
+
+    def test_credit_failures_do_not_count(self):
         import json
         led = Ledger(":memory:")
         key = finalize._review_kv_key("x", 5)
         for rid in range(1, 6):
             led.set_kv(key, json.dumps({"run_id": rid, "sha": "sha1"}))
             e, states, pings = self.ending(led, rid)
-            if rid % 2:
-                e.reason = "no_credit"
-                finalize._review_inconclusive(e)
-            else:
-                finalize._review_inconclusive(e, count=False)
+            e.reason = "no_credit"
+            finalize._review_inconclusive(e)
             self.assertEqual(states[0][0][0], "verifying")
         self.assertIsNone(led.get_kv("reviewinconclusive:x#5:sha1"))
 
