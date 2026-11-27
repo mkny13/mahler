@@ -18,7 +18,10 @@ OPERATOR_PATHS = ('/Users/mike', '/Volumes/ExtSSD160')
 def documented_commands(markdown):
     """Top-level subcommands in fenced shell blocks and inline code spans."""
     commands = set()
-    fenced = re.findall(r'```(?:bash|sh)?\n(.*?)```', markdown, re.DOTALL)
+    fenced = []
+    for match in re.finditer(r'```([^\n]*)\n(.*?)```', markdown, re.DOTALL):
+        if match.group(1).strip() in {'bash', 'sh'}:
+            fenced.append(match.group(2))
     snippets = [line for block in fenced for line in block.splitlines()]
     unfenced = re.sub(r'```.*?```', '', markdown, flags=re.DOTALL)
     snippets += re.findall(r'`([^`\n]+)`', unfenced)
@@ -57,6 +60,17 @@ class OnboardingDocsTests(unittest.TestCase):
     def test_command_extractor_flags_unknown_command(self):
         self.assertEqual(documented_commands('Run `mahler nonesuch --x` now'), {'nonesuch'})
         self.assertNotIn('nonesuch', parser_commands())
+
+    def test_command_extractor_handles_shell_block_after_non_shell_block(self):
+        markdown = """```toml
+[project]
+name = \"example\"
+```
+```bash
+mahler labels
+mahler tick
+```"""
+        self.assertEqual(documented_commands(markdown), {'labels', 'tick'})
 
     def test_no_operator_specific_paths(self):
         for name in DOCUMENTS:
