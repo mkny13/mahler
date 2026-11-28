@@ -1192,7 +1192,7 @@ class GradleWrapperTests(unittest.TestCase):
         for path in ("gradle/wrapper/gradle-wrapper.properties",
                      "android/gradle/wrapper/gradle-wrapper.properties",
                      "gradle/wrapper/gradle-wrapper.jar"):
-            self.assertTrue(vetting.relevant_path(path), path)
+            self.assertTrue(vetting.relevant_path(path), "wrapper file must be vetted")
 
     def test_changed_dependencies_reports_wrapper_bump(self):
         deps = vetting.changed_dependencies(wrapper_files("9.8.2"), wrapper_files())
