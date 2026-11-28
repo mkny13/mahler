@@ -766,16 +766,17 @@ class AntigravityCatalogTests(unittest.TestCase):
                       "gemini-pro-orchestrator-neon"):
             self.assertEqual(plats[f"agy-gemini/{model}/default"]["tier"], 3)
 
-    def test_argon_slot_spends_its_own_weekly_only_pool(self):
+    def test_argon_slot_shares_gemini_models_pool_and_quota_group(self):
         plats = self.expanded()
         argon = plats["agy-argon"]
-        self.assertEqual(argon["pool"], "Gemini 4 Argon")
-        self.assertEqual(argon["windows"], ["weekly"])
-        self.assertEqual(argon.get("quota_group", "agy-argon"), "agy-argon")
+        self.assertEqual(argon["pool"], "Gemini Models")
+        self.assertEqual(argon["windows"], ["5h", "weekly"])
+        self.assertEqual(argon["quota_group"], "agy-gemini")
         self.assertEqual(plats["agy-argon/gemini-4-argon-high/default"]["quota_group"],
-                         "agy-argon")
-        self.assertNotEqual(plats["agy-gemini"].get("quota_group", "agy-gemini"),
-                            "agy-argon")
+                         "agy-gemini")
+        for line, pct in (("soft", 85), ("hard", 90)):
+            self.assertEqual(argon[line], {"5h": pct, "weekly": pct})
+            self.assertEqual(argon[line], plats["agy-gemini"][line])
         self.assertEqual(router.cost_class(argon), "free")
 
     def test_priced_new_models_and_unknown_hydrogen(self):

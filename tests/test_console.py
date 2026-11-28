@@ -64,12 +64,11 @@ def fresh(led, platform, window, pct, resets_in=timedelta(hours=3)):
 def all_fresh(led, pct=10):
     """Every metered default platform has a fresh reading under its lines,
     with resets far enough out that no D23 burst raises Claude's lines."""
-    for p in ("claude", "claude-opus", "agy-claude", "agy-gemini"):
+    for p in ("claude", "claude-opus", "agy-claude", "agy-gemini", "agy-argon"):
         fresh(led, p, "5h", pct)
         fresh(led, p, "weekly", pct, resets_in=timedelta(days=3))
     for p in ("copilot", "copilot-high"):
         fresh(led, p, "monthly", pct, resets_in=timedelta(days=10))
-    fresh(led, "agy-argon", "weekly", pct, resets_in=timedelta(days=3))
 
 
 class SystemStateTests(unittest.TestCase):
@@ -812,7 +811,8 @@ class IdleReasonTests(unittest.TestCase):
         fresh(led, "agy-gemini", "weekly", 88, resets_in=timedelta(days=2))
         led.upsert_item("mahler", 1, title="t", state="ready")
         texts = [r["text"] for r in self.idle(cfg, led)["reasons"]]
-        self.assertIn("agy-gemini and agy-claude are both past 85% on the weekly window, so the "
+        # Gemini and Argon now share a quota group, labelled by their common prefix.
+        self.assertIn("agy and agy-claude are both past 85% on the weekly window, so the "
                       "scheduler won't start there.", texts)
 
     def test_backoff_offers_to_clear(self):
