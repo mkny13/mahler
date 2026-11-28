@@ -505,6 +505,10 @@ def _quota_usage_state(led, name, pconf, burst_lines=None):
         else:
             resets = _ts(u.get("resets_at"))
             sampled = _ts(u.get("sampled_at"))
+            # Older Antigravity samples can still contain the inactive-window
+            # epoch sentinel, even after the reader starts normalizing it.
+            if pconf.get("kind") == "agy" and resets and resets.timestamp() <= 0:
+                resets = None
             if resets and resets <= now:
                 state = "stale"          # window rolled over — re-probe rather than guess
                 detail.append(f"{w}: reset since sample")

@@ -1155,6 +1155,25 @@ def probe_claude(env=None):
     return samples
 
 
+def _agy_reset_time(value):
+    """Unused Antigravity windows have no reset, sometimes encoded as epoch."""
+    if value is None or value == "":
+        return None
+    try:
+        if float(value) <= 0:
+            return None
+    except (TypeError, ValueError):
+        try:
+            reset = datetime.fromisoformat(value)
+            if reset.tzinfo is None:
+                reset = reset.replace(tzinfo=timezone.utc)
+            if reset <= datetime(1970, 1, 1, tzinfo=timezone.utc):
+                return None
+        except (TypeError, ValueError):
+            pass
+    return value
+
+
 def parse_agy_usage(data):
     """`agy -p /usage --output-format json` -> {pool_name: [(window, used_pct, resets)]}"""
     out = {}
@@ -1165,7 +1184,7 @@ def parse_agy_usage(data):
             window = {"5h": "5h", "weekly": "weekly"}.get(b.get("window"))
             if window and b.get("remaining_fraction") is not None:
                 rows.append((window, round(100 * (1 - float(b["remaining_fraction"])), 1),
-                             b.get("reset_time")))
+                             _agy_reset_time(b.get("reset_time"))))
         out[g.get("name")] = rows
     return out
 
