@@ -163,6 +163,19 @@ def _git(path, *args, env=None):
     return r.stdout.strip()
 
 
+def _git_blob_bytes(path, revision_path, env=None):
+    """Raw blob bytes (git show in text mode would corrupt binaries)."""
+    try:
+        r = subprocess.run(["git", "-C", path, "cat-file", "blob", revision_path],
+                           capture_output=True, timeout=90, env=env)
+    except (subprocess.SubprocessError, OSError) as e:
+        raise GHError(f"git cat-file: {_safe_error(str(e), env)}") from None
+    if r.returncode != 0:
+        raise GHError("git cat-file: " + _safe_error(
+            r.stderr.decode("utf-8", "replace").strip(), env)[:400])
+    return r.stdout
+
+
 def project_client(cfg, pol):
     """Use one project identity for conductor, interactive CLI and MCP calls."""
     from . import github_app
@@ -1164,6 +1177,13 @@ class GH:
             result = {}
             for name in tree_paths:
                 if name and relevant_path(name):
+                    if name.rsplit("/", 1)[-1] == "gradle-wrapper.jar":
+                        try:
+                            blob = _git_blob_bytes(path, f"{revision}:{name}", self._git_env())
+                        except GHError:
+                            raise GHError(f"dependency vetting: cannot read {name}") from None
+                        result[name] = "sha256:" + hashlib.sha256(blob).hexdigest()
+                        continue
                     try:
                         result[name] = self._git(path, "show", f"{revision}:{name}")
                     except GHError:

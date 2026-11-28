@@ -65,6 +65,8 @@ class Dependency:
     declaration: str
     version: str | None
     revision: str | None = None
+    checksum: str | None = None  # gradle-wrapper: distributionSha256Sum, if declared
+    jar: str | None = None  # gradle-wrapper: "sha256:<hex>" of a changed wrapper jar
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,7 @@ class Finding:
     blocked: bool
     recent: bool
     eligible_at: str | None = None
+    note: str = ""
 
     def report(self):
         advisories = "; ".join(self.advisories) if self.advisories else "none"
@@ -84,6 +87,7 @@ class Finding:
                 f"{self.dependency.version}: first published "
                 f"{self.first_published}; publisher {self.publisher}; "
                 f"source {self.source}; advisories {advisories}"
+                f"{'; ' + self.note if self.note else ''}"
                 f"{' [BLOCKED]' if self.blocked else ''}")
 
 
@@ -105,7 +109,7 @@ _RELEVANT = re.compile(
     r"constraints[^/]*\.txt|setup\.py|setup\.cfg|"
     r"Package\.swift|Package\.resolved|build\.gradle(?:\.kts)?|"
     r"settings\.gradle(?:\.kts)?|gradle\.properties|libs\.versions\.toml|"
-    r"gradle\.lockfile|gradle/dependency-locks/[^/]+\.lockfile|pnpm-lock\.yaml|yarn\.lock|Pipfile|Pipfile\.lock)$"
+    r"gradle\.lockfile|gradle-wrapper\.(?:properties|jar)|gradle/dependency-locks/[^/]+\.lockfile|pnpm-lock\.yaml|yarn\.lock|Pipfile|Pipfile\.lock)$"
 )
 _UNSUPPORTED_LOCKS = {
     "yarn.lock", "Pipfile", "Pipfile.lock",
@@ -845,6 +849,77 @@ def _gradle_manifest_changed(path, before, after):
     return _gradle_declarations(before or "") != _gradle_declarations(after or "")
 
 
+_WRAPPER_URL = re.compile(
+    r"https://services\.gradle\.org/distributions/"
+    r"gradle-([0-9]+\.[0-9]+(?:\.[0-9]+)?)-(?:bin|all)\.zip")
+_WRAPPER_JAR = "gradle-wrapper.jar"
+_WRAPPER_PROPS = "gradle-wrapper.properties"
+
+
+def _gradle_wrapper_settings(text, path):
+    """Return (distributionUrl, version, distributionSha256Sum or None); fail closed."""
+    values = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line[0] in "#!":
+            continue
+        match = re.match(r"([^=:\s]+)\s*[=:]?\s*(.*)$", line)
+        if not match:
+            continue
+        key, value = match.groups()
+        if key in values and key in ("distributionUrl", "distributionSha256Sum"):
+            raise VettingError(f"unparseable or non-official Gradle distributionUrl in {path}: "
+                               f"duplicate {key}")
+        values[key] = value.replace("\\:", ":").strip()
+    url = values.get("distributionUrl")
+    parsed = _WRAPPER_URL.fullmatch(url) if url else None
+    if not parsed:
+        raise VettingError(f"unparseable or non-official Gradle distributionUrl in {path}: "
+                           f"{url or 'missing'}")
+    checksum = values.get("distributionSha256Sum")
+    if checksum is not None and not re.fullmatch(r"[0-9a-fA-F]{64}", checksum):
+        raise VettingError(f"invalid distributionSha256Sum in {path}")
+    return url, parsed.group(1), checksum.lower() if checksum else None
+
+
+def _changed_gradle_wrapper(before, after):
+    props = [p for p in set(before) | set(after) if p.rsplit("/", 1)[-1] == _WRAPPER_PROPS]
+    jars = [p for p in set(before) | set(after)
+            if p.rsplit("/", 1)[-1] == _WRAPPER_JAR and before.get(p) != after.get(p)]
+    found, covered = [], set()
+    for path in sorted(props):
+        if before.get(path) == after.get(path) or path not in after:
+            continue
+        new = _gradle_wrapper_settings(after[path], path)
+        old = None
+        if path in before:
+            try:
+                old = _gradle_wrapper_settings(before[path], path)
+            except VettingError:
+                old = None
+        if old is not None and old == new:
+            continue
+        jar = None
+        for jar_path in jars:
+            if _project_dir(jar_path) == _project_dir(path):
+                jar = after.get(jar_path)
+                if not isinstance(jar, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", jar):
+                    raise VettingError(f"unreadable {jar_path} checksum")
+        if old is None or old[1] != new[1]:
+            found.append(Dependency("gradle-wrapper", "gradle", new[0], new[1],
+                                    checksum=new[2], jar=jar))
+            covered.add(_project_dir(path))
+        elif jar:
+            raise VettingError(f"{_WRAPPER_JAR} changed without a Gradle wrapper version change")
+        else:
+            found.append(Dependency("gradle-wrapper", "gradle", new[0], new[1],
+                                    checksum=new[2]))
+    for jar_path in jars:
+        if _project_dir(jar_path) not in covered:
+            raise VettingError(f"{_WRAPPER_JAR} changed without a Gradle wrapper version change")
+    return found
+
+
 def _changed_project_dependencies(before, after):
     """Return added or changed manifest and lock dependencies without network access."""
     for path in set(before) | set(after):
@@ -889,10 +964,11 @@ def _changed_project_dependencies(before, after):
         if not has_resolved_change:
             raise VettingError(f"unresolved Gradle dependency manifest change without lockfile: {gradle_manifests[0]}")
 
+    wrapper = _changed_gradle_wrapper(before, after)
     old_direct, new_direct = _direct_dependencies(before), _direct_dependencies(after)
     old_versions = {"npm": _npm_versions(before, old_direct), "pypi": _python_versions(before, old_direct)}
     new_versions = {"npm": _npm_versions(after, new_direct), "pypi": _python_versions(after, new_direct)}
-    changed = _changed_resolved_dependencies(before, after)
+    changed = _changed_resolved_dependencies(before, after) + wrapper
     for path in set(before) | set(after):
         if path.rsplit("/", 1)[-1] != "libs.versions.toml" or before.get(path) == after.get(path):
             continue
@@ -1005,6 +1081,62 @@ def _date(value):
         return parsed.astimezone(timezone.utc)
     except ValueError:
         return None
+
+
+_GRADLE_HOST = "https://services.gradle.org/"
+
+
+def _gradle_checksum(url, opener):
+    if not isinstance(url, str) or not url.startswith(_GRADLE_HOST):
+        raise VettingError(f"non-official Gradle checksum URL: {url}")
+    text = _request_text(url, opener)
+    match = re.match(r"\s*([0-9a-fA-F]{64})\b", text or "")
+    if not match:
+        raise VettingError(f"missing Gradle checksum: {url}")
+    return match.group(1).lower()
+
+
+def _gradle_wrapper_metadata(dep, opener):
+    """Return (published, publisher, source, note) for an official Gradle distribution."""
+    try:
+        versions = _request_json(_GRADLE_HOST + "versions/all", opener=opener)
+    except VettingError as exc:
+        msg = f"gradle-wrapper gradle@{dep.version}: {exc}"
+        if getattr(exc, "transient", False):
+            raise TransientVettingError(msg) from None
+        raise VettingError(msg) from None
+    if not isinstance(versions, list):
+        raise VettingError("invalid Gradle versions response")
+    entry = next((v for v in versions if isinstance(v, dict) and v.get("version") == dep.version),
+                 None)
+    if entry is None:
+        raise VettingError(f"unresolved Gradle release: {dep.version}")
+    if (any(entry.get(k) for k in ("snapshot", "nightly", "releaseNightly", "broken", "activeRc"))
+            or entry.get("rcFor") or entry.get("milestoneFor")):
+        raise VettingError(f"Gradle {dep.version} is not a final release")
+    try:
+        published = datetime.strptime(str(entry.get("buildTime")), "%Y%m%d%H%M%S%z")
+    except ValueError:
+        raise VettingError(f"unparseable Gradle buildTime for {dep.version}") from None
+    published = published.astimezone(timezone.utc)
+    notes = []
+    zip_url = dep.declaration
+    is_all = zip_url.endswith("-all.zip")
+    published_sum = _gradle_checksum(
+        zip_url + ".sha256" if is_all else entry.get("checksumUrl"), opener)
+    if dep.checksum is None:
+        notes.append("distributionSha256Sum absent")
+    elif dep.checksum != published_sum:
+        raise VettingError(f"distributionSha256Sum does not match published Gradle "
+                           f"{dep.version} checksum")
+    else:
+        notes.append(f"distributionSha256Sum {dep.checksum} (verified)")
+    if dep.jar:
+        if dep.jar != "sha256:" + _gradle_checksum(entry.get("wrapperChecksumUrl"), opener):
+            raise VettingError(f"gradle-wrapper.jar sha256 does not match Gradle "
+                               f"{dep.version} wrapper checksum")
+        notes.append("wrapper jar sha256 verified")
+    return published, "Gradle Inc.", zip_url, "; ".join(notes)
 
 
 def _metadata(dep, opener):
@@ -1391,7 +1523,11 @@ def _severity(advisory):
 
 
 def _advisories(dep, opener):
-    package = {"name": dep.name, "ecosystem": {"npm": "npm", "pypi": "PyPI", "swift": "SwiftURL", "gradle": "Maven"}[dep.ecosystem]}
+    package = {"name": dep.name, "ecosystem": {"npm": "npm", "pypi": "PyPI", "swift": "SwiftURL", "gradle": "Maven", "gradle-wrapper": "Maven"}[dep.ecosystem]}
+    if dep.ecosystem == "gradle-wrapper":
+        # OSV has no package for the Gradle distribution itself; Gradle's published
+        # advisories (GHSA) are filed against its Maven artifact org.gradle:gradle-tooling-api.
+        package["name"] = "org.gradle:gradle-tooling-api"
     payload = json.dumps({"version": dep.version, "package": package}).encode()
     try:
         result = _request_json("https://api.osv.dev/v1/query", data=payload, opener=opener)
@@ -1435,7 +1571,11 @@ def vet(before, after, *, now=None, opener=None):
             raise VettingError(f"unresolved Swift version/revision: {dependency.name}")
     for dependency in dependencies:
         try:
-            published, publisher, source = _metadata(dependency, opener)
+            note = ""
+            if dependency.ecosystem == "gradle-wrapper":
+                published, publisher, source, note = _gradle_wrapper_metadata(dependency, opener)
+            else:
+                published, publisher, source = _metadata(dependency, opener)
             advisories, advisory_block = _advisories(dependency, opener)
         except VettingError:
             raise
@@ -1447,7 +1587,7 @@ def vet(before, after, *, now=None, opener=None):
         dep_eligible = (published + MIN_AGE).isoformat() if (recent and not advisory_block) else None
         findings.append(Finding(dependency, published.isoformat(),
                                 publisher, source, advisories, blocked, recent,
-                                eligible_at=dep_eligible))
+                                eligible_at=dep_eligible, note=note))
     reasons = []
     has_non_age_block = False
     for finding in findings:

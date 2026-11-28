@@ -3721,6 +3721,24 @@ class ShipTests(unittest.TestCase):
                     self.ship()
                 self.assertEqual(self.gh.merged, [] if blocked else [88])
 
+    def test_gate_evidence_comment_includes_gradle_wrapper_line(self):
+        dv = ship.dependency_vetting
+        dep = dv.Dependency("gradle-wrapper", "gradle",
+                            "https://services.gradle.org/distributions/gradle-9.9.1-bin.zip", "9.9.1")
+        finding = dv.Finding(dep, "2026-01-01T12:00:00+00:00", "Gradle Inc.", dep.declaration,
+                             (), False, False, note="distributionSha256Sum absent")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.gh, "dependency_files", return_value=({}, {"x": "y"})), \
+                mock.patch.object(dv, "changed_dependencies", return_value=[dep]), \
+                mock.patch.object(dv, "vet", return_value=((finding,), None)), \
+                mock.patch.object(ship, "_start_review_run"):
+            ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+        marker = f"<!-- mahler:dependency-vetting sha={self.gh.head_sha} -->"
+        comments = [c for c in self.gh.comments if marker in c]
+        self.assertEqual(len(comments), 1)
+        self.assertIn("- gradle-wrapper gradle@9.9.1: first published", comments[0])
+        self.assertIn("distributionSha256Sum absent", comments[0])
+
     def test_swift_gate_runs_before_merge(self):
         from tests.test_dependency_vetting import swift_files
         self._assert_resolved_dependency_gate(swift_files)
@@ -5056,6 +5074,38 @@ class FreshnessAdapterTests(unittest.TestCase):
             git("push", "origin", "HEAD:topic")
             self.assertTrue(gh.base_in_head(repo, "main", source_only_head))
             self.assertEqual(gh.dependency_files(repo, "main", source_only_head), ({}, {}))
+
+    def test_dependency_files_hashes_binary_wrapper_jar(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as d:
+            repo, origin = os.path.join(d, "repo"), os.path.join(d, "origin.git")
+            subprocess.run(["git", "init", "-b", "main", repo], check=True, capture_output=True)
+            subprocess.run(["git", "init", "--bare", origin], check=True, capture_output=True)
+
+            def git(*args):
+                return subprocess.run(["git", "-C", repo, *args], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+
+            git("remote", "add", "origin", origin)
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.com")
+            with open(os.path.join(repo, "README.md"), "w") as file:
+                file.write("base\n")
+            git("add", "-A")
+            git("commit", "-m", "base")
+            git("push", "origin", "HEAD:main")
+            jar = bytes(range(256)) + b"\xff\xfe"
+            os.makedirs(os.path.join(repo, "gradle", "wrapper"))
+            with open(os.path.join(repo, "gradle", "wrapper", "gradle-wrapper.jar"), "wb") as file:
+                file.write(jar)
+            git("add", "-A")
+            git("commit", "-m", "wrapper")
+            head = git("rev-parse", "HEAD")
+            git("push", "origin", "HEAD:topic")
+            before, after = gh_module.GH("test/repo").dependency_files(repo, "main", head)
+            self.assertEqual(before, {})
+            self.assertEqual(after, {"gradle/wrapper/gradle-wrapper.jar":
+                                     "sha256:" + hashlib.sha256(jar).hexdigest()})
 
     def test_dependency_files_fetches_remote_only_head_and_stale_target(self):
         with tempfile.TemporaryDirectory() as d:
