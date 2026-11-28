@@ -699,10 +699,22 @@ class ParseTests(unittest.TestCase):
                 {"window": "weekly", "remaining_fraction": 0.74, "reset_time": "2026-09-18T21:25:17Z"},
                 {"window": "5h", "remaining_fraction": 0.78, "reset_time": "2026-09-13T00:10:06Z"}]},
             {"name": "Claude and GPT models", "buckets": [
-                {"window": "weekly", "remaining_fraction": 1}]}]}}}
+                {"window": "weekly", "remaining_fraction": 1,
+                 "reset_time": "1970-01-01T00:00:00Z"}]}]}}}
         pools = platforms.parse_agy_usage(data)
         self.assertEqual(pools["Gemini Models"][0], ("weekly", 26.0, "2026-09-18T21:25:17Z"))
-        self.assertEqual(pools["Claude and GPT models"][0][1], 0.0)
+        self.assertEqual(pools["Claude and GPT models"][0], ("weekly", 0.0, None))
+
+    def test_agy_inactive_reset_times(self):
+        for reset in (None, "", 0, -1, "0", "-1", "1970-01-01T00:00:00+00:00",
+                      "1969-12-31T23:59:59Z", "1970-01-01T01:00:00+01:00"):
+            with self.subTest(reset=reset):
+                bucket = {"window": "weekly", "remaining_fraction": 1}
+                if reset is not None:
+                    bucket["reset_time"] = reset
+                pools = platforms.parse_agy_usage({"command": {"data": {"groups": [
+                    {"name": "Claude and GPT models", "buckets": [bucket]}]}}})
+                self.assertEqual(pools["Claude and GPT models"], [("weekly", 0.0, None)])
 
     def test_claude_rate_limit_event(self):
         ev = {"type": "rate_limit_event", "rate_limit_info": {
