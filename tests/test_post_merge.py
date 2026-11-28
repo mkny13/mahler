@@ -801,6 +801,87 @@ class PostMergeTests(unittest.TestCase):
         mahler_bin.chmod(0o755)
         return app, older_sha, merge_sha
 
+    def transitioning_live(self):
+        # Model #1793's shipment (17d9ee109dbd5468ada851191bd6d47a1f83e2ed)
+        # with an equivalent old -> merge topology, entirely in temporary state.
+        app, older, merge = self._setup_app_git()
+        marker = Path(config.STATE) / "launch_ok"
+        marker.write_text(older)
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="mahler", live_command="")
+        self.register(sha=merge)
+        self.tick()
+        self.tick()
+        self.assertEqual(self.row(merge)["summary"], "awaiting daemon self-update")
+        subprocess.run(["git", "checkout", "-q", "--detach", merge], cwd=app, check=True)
+        from mahler.ledger import parse
+        deadline = parse(self.row(merge)["deadline_at"])
+        # The checkout advances before the next successful launch writes launch_ok.
+        for when in (deadline - timedelta(seconds=1), deadline):
+            self.now = when
+            self.restart()
+            with mock.patch.object(launch_health, "exact_live",
+                                   wraps=launch_health.exact_live) as observe:
+                self.tick()
+            observe.assert_called_once()
+            row = self.row(merge)
+            self.assertEqual((row["status"], row["phase"]), ("pending", "live"))
+            self.assertFalse(row["live_sha"])
+            self.assertFalse(row["evidence_ref"])
+        self.gh.create_issue.assert_not_called()
+        return app, marker, merge
+
+    def test_transitioning_live_exact_proof_after_restart(self):
+        app, marker, merge = self.transitioning_live()
+        marker.write_text(merge)
+        self.restart()
+        self.tick()
+        self.assertEqual(self.row(merge)["phase"], "smoke")
+        self.tick()
+        self.assertEqual(self.row(merge)["status"], "PASS")
+
+    def test_transitioning_live_descendant_proof_after_restart(self):
+        app, marker, merge = self.transitioning_live()
+        subprocess.run(["git", "commit", "--allow-empty", "-qm", "descendant"],
+                       cwd=app, check=True)
+        descendant = subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                             cwd=app, text=True).strip()
+        marker.write_text(descendant)
+        self.restart()
+        self.tick()
+        self.assertEqual(self.row(merge)["artifact_ref"], "mahler:" + descendant)
+        self.tick()
+        self.assertEqual(self.row(merge)["status"], "PASS")
+
+    @mock.patch("mahler.notify.send")
+    def test_transitioning_live_unavailable_has_terminal_deadline_and_late_recovery(self, ping):
+        app, marker, merge = self.transitioning_live()
+        from mahler.ledger import parse
+        deadline = parse(self.row(merge)["deadline_at"])
+        marker.unlink()
+        for when in (deadline - timedelta(seconds=1), deadline):
+            self.now = when
+            self.restart()
+            self.tick()
+            row = self.row(merge)
+            self.assertEqual(row["status"], "pending" if when < deadline else "FAIL")
+            self.assertEqual(row["phase"], "live")
+            self.assertFalse(row["evidence_ref"])
+            self.assertEqual(parse(row["deadline_at"]), deadline)
+        self.assertEqual(row["failure_code"], "timeout")
+        self.assertEqual(len(self.led.q(
+            "SELECT * FROM events WHERE kind='post_merge_self_update_deferred'")), 1)
+        self.restart()
+        self.tick()
+        self.assertEqual(self.row(merge)["status"], "FAIL")
+        marker.write_text(merge)
+        self.tick()
+        self.assertEqual((self.row(merge)["status"], self.row(merge)["phase"]),
+                         ("pending", "live"))
+        self.tick()
+        self.tick()
+        self.assertEqual(self.row(merge)["status"], "PASS")
+
     def test_mahler_self_update_deferral(self):
         app, older_sha, merge_sha = self._setup_app_git()
         (Path(config.STATE) / "launch_ok").write_text(older_sha)
