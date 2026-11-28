@@ -58,9 +58,9 @@ def _fix_worktree_conflict(ctx, repo, branch, root):
     return False
 
 
-def git(repo, *args, env=None, check=True):
+def git(repo, *args, env=None, check=True, input=None):
     r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True,
-                       env=env, timeout=300)
+                       env=env, input=input, timeout=300)
     if check and r.returncode != 0:
         raise GitError(f"git {' '.join(args[:3])}: "
                        f"{redact.redact((r.stderr or r.stdout).strip())[:400]}")
@@ -1063,10 +1063,18 @@ def snapshot(repo, wt, run_id, number, base, env=None):
     if not os.path.isdir(wt):
         return None
     idx = os.path.join(config.RUNS_DIR, str(run_id), "snapshot.index")
+    index_entries = git(wt, "ls-files", "-v", "-z")
+    skipped = [entry[2:] for entry in index_entries.split("\0")
+               if entry[:2] in ("S ", "s ")]
     env = dict(env or os.environ, GIT_INDEX_FILE=idx)
     try:
         head = git(wt, "rev-parse", "HEAD")
         git(wt, "read-tree", "HEAD", env=env)
+        # read-tree loses the real index flags that hide D44-suppressed lessons.
+        # Carry them over before add sees the deliberately missing files.
+        if skipped:
+            git(wt, "update-index", "--skip-worktree", "-z", "--stdin",
+                input="\0".join(skipped) + "\0", env=env)
         git(wt, "add", "-A", env=env)
         tree = git(wt, "write-tree", env=env)
         sha = head
