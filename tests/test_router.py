@@ -260,3 +260,39 @@ class ArgonWeeklyPoolTests(unittest.TestCase):
         state, _ = router.usage_state(self.led, 'agy-argon',
                                       self.cfg['platforms']['agy-argon'])
         self.assertEqual(state, 'stale')
+
+
+class AgyInactiveWindowTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 11, 27, tzinfo=timezone.utc)
+        self.led = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+        self.pconf = dict(config.DEFAULTS['platforms']['agy-claude'], windows=['weekly'])
+
+    def test_unused_payload_through_ledger_is_available(self):
+        pools = platforms.parse_agy_usage({"command": {"data": {"groups": [
+            {"name": "Claude and GPT models", "buckets": [
+                {"window": "weekly", "remaining_fraction": 1,
+                 "reset_time": "1970-01-01T00:00:00Z"}]}]}}})
+        for window, pct, reset in pools['Claude and GPT models']:
+            self.led.record_usage('agy-claude', window, pct, reset)
+        self.assertEqual(router.usage_state(self.led, 'agy-claude', self.pconf),
+                         ('ok', 'weekly 0%'))
+
+    def test_reset_sentinel_and_real_rollover(self):
+        for reset, expected in ((None, ('ok', 'weekly 0%')),
+                                ('1970-01-01T00:00:00Z', ('ok', 'weekly 0%')),
+                                ('2026-11-26T23:59:00Z',
+                                 ('stale', 'weekly: reset since sample'))):
+            with self.subTest(reset=reset):
+                self.led.record_usage('agy-claude', 'weekly', 0, reset)
+                self.assertEqual(router.usage_state(self.led, 'agy-claude', self.pconf), expected)
+
+    def test_no_reset_still_enforces_age_and_usage(self):
+        self.led.record_usage('agy-claude', 'weekly', 100, None)
+        self.assertEqual(router.usage_state(self.led, 'agy-claude', self.pconf)[0], 'hard')
+        self.led.record_usage('agy-claude', 'weekly', 0, None,
+                              sampled_at='2026-11-26T00:00:00Z')
+        state, detail = router.usage_state(self.led, 'agy-claude', self.pconf)
+        self.assertEqual(state, 'stale')
+        self.assertIn('sample older than', detail)
