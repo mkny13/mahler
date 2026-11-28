@@ -289,7 +289,10 @@ def _observe_live(ctx, row, policy):
     except Exception as exc:
         # Provider/auth/JSON failures are retryable, without retaining payloads.
         reason = classify_deployment_lookup_error(exc)
+    waiting_key = (f"post-merge-self-update-observed:{row['project']}:"
+                   f"{row['number']}:{row['merge_sha']}")
     if artifact is launch_health.AWAITING_SELF_UPDATE:
+        ctx.led.set_kv(waiting_key, "1")
         if ctx.led.now() >= parse(row["deadline_at"]):
             if not ctx.led.defer_post_merge_self_update(
                     row["project"], row["number"], row["merge_sha"]):
@@ -298,6 +301,17 @@ def _observe_live(ctx, row, policy):
         else:
             _change(ctx, row, summary="awaiting daemon self-update")
     elif ctx.led.now() >= parse(row["deadline_at"]):
+        # Installing the new checkout precedes its first proven launch. During
+        # that gap exact_live must return None, but it must not erase an older
+        # daemon observation's eligibility for the existing one-time deferral.
+        # Keep this durable across intervening unknown polls and tick restarts;
+        # it grants time only, never live proof or another observation window.
+        if (artifact is None
+                and policy["post_merge"]["live_strategy"] == "mahler"
+                and ctx.led.get_kv(waiting_key) == "1"
+                and ctx.led.defer_post_merge_self_update(
+                    row["project"], row["number"], row["merge_sha"])):
+            return
         _fail(ctx, {**dict(row), "summary": reason}, "timeout")
     elif artifact:
         _change(ctx, row, phase="smoke", live_sha=row["merge_sha"], artifact_ref=artifact)
