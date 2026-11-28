@@ -24,6 +24,7 @@ jobs:
             BASE_SHA="$(git hash-object -t tree /dev/null)"
           fi
           python -m mahler.consolidation_gate --base "$BASE_SHA" --head "$HEAD_SHA"
+      - run: /bin/sh scripts/verify_sdk_runner.sh
       - run: python -m unittest discover -s tests -v
       - run: python tests/run_random.py
       - run: python -X dev tests/run_strict.py
