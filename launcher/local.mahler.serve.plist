@@ -12,10 +12,10 @@
      The server binds to 127.0.0.1 by default. To view it from your phone on the
      tailnet, run ONCE by hand (do not put this in a script or repo hook):
 
-       tailscale serve --bg http://127.0.0.1:8787
+       tailscale serve in background mode for http://127.0.0.1:8787
 
      then open https://<this-machine>.<tailnet>.ts.net/ on the phone.
-     Undo with `tailscale serve --https=443 off`. -->
+     Undo with the Tailscale HTTPS-off command. -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
