@@ -2,7 +2,7 @@
 
 [verify]
 fast = "python3 -m unittest discover -s tests"
-full = "python3 -m unittest discover -s tests -v"
+full = "python3 -m unittest discover -s tests -v && /bin/sh scripts/verify_sdk_runner.sh"
 
 [release]
 # Merging to main is the release: the launcher on the Mac mini picks up a
