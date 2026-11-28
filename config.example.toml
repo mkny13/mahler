@@ -366,7 +366,8 @@ screenshot_path = []              # inherited operator absolute executable direc
 # agy-claude: Opus 5.5 medium, then Sonnet 5.5 medium
 # agy-gemini: Gemini 3.8 Flash high, then Gemini 4 Hydrogen medium/high,
 #   Neon medium/high and Orchestrator (Neon) (tier 3)
-# agy-argon: Gemini 4 Argon medium, then high (its own weekly-only pool)
+# agy-argon: Gemini 4 Argon medium, then high. Since agy 1.5.18 these share
+#   the Gemini Models pool (5h/weekly) and agy-gemini quota group/run slot.
 # Agy variants are exact `agy models` IDs (the ID carries the effort), never
 # `model@effort`. An override of [groups]/[routing] must list agy-argon itself.
 

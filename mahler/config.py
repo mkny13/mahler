@@ -349,15 +349,16 @@ DEFAULTS = {
             "variant_tiers": {"gemini-4-neon-medium": 3, "gemini-4-neon-high": 3,
                               "gemini-pro-orchestrator-neon": 3},
         },
-        # Gemini 4 Argon has its own weekly-only quota on AI Pro, separate
-        # from the "Gemini Models" pool, so this slot adds free capacity.
+        # agy 1.5.18 folded Argon into Gemini Models. Keep the slot for
+        # existing configs, sharing Gemini quota and its concurrent run limit.
         "agy-argon": {
-            "enabled": True, "kind": "agy", "pool": "Gemini 4 Argon",
+            "enabled": True, "kind": "agy", "pool": "Gemini Models",
+            "quota_group": "agy-gemini",
             "model": "gemini-4-argon-medium",
             "max_size": "m", "tier": 2,
-            "windows": ["weekly"],   # no 5h bucket in agy's /usage
-            "soft": {"weekly": 85},
-            "hard": {"weekly": 90},
+            "windows": ["5h", "weekly"],
+            "soft": {"5h": 85, "weekly": 85},
+            "hard": {"5h": 90, "weekly": 90},
             "stale_minutes": 5,
             "variants": ["gemini-4-argon-medium", "gemini-4-argon-high"],
         },

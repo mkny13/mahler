@@ -811,7 +811,8 @@ class IdleReasonTests(unittest.TestCase):
         fresh(led, "agy-gemini", "weekly", 88, resets_in=timedelta(days=2))
         led.upsert_item("mahler", 1, title="t", state="ready")
         texts = [r["text"] for r in self.idle(cfg, led)["reasons"]]
-        self.assertIn("agy-gemini and agy-claude are both past 85% on the weekly window, so the "
+        # Gemini and Argon now share a quota group, labelled by their common prefix.
+        self.assertIn("agy and agy-claude are both past 85% on the weekly window, so the "
                       "scheduler won't start there.", texts)
 
     def test_backoff_offers_to_clear(self):
