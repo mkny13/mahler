@@ -1141,5 +1141,142 @@ class CompletionEvidenceTests(unittest.TestCase):
 
 
 
+WRAPPER_SUM = "a" * 64
+JAR_SUM = "b" * 64
+WRAPPER_PATH = "gradle/wrapper/gradle-wrapper.properties"
+JAR_PATH = "gradle/wrapper/gradle-wrapper.jar"
+
+
+def wrapper_files(version="9.9.1", sum_=WRAPPER_SUM, url=None, jar=None):
+    url = url or f"https\\://services.gradle.org/distributions/gradle-{version}-bin.zip"
+    text = f"distributionBase=GRADLE_USER_HOME\ndistributionUrl={url}\n"
+    if sum_:
+        text += f"distributionSha256Sum={sum_}\n"
+    files = {WRAPPER_PATH: text}
+    if jar:
+        files[JAR_PATH] = "sha256:" + jar
+    return files
+
+
+class GradleWrapperTests(unittest.TestCase):
+    def opener(self, build_time="20260101120000+0000", delegate=None, **flags):
+        calls = []
+
+        def open_request(request, timeout):
+            url = request.full_url
+            calls.append(url)
+            if url == "https://services.gradle.org/versions/all":
+                entry = {"version": "9.9.1", "buildTime": build_time, "snapshot": False,
+                         "nightly": False, "releaseNightly": False, "broken": False,
+                         "activeRc": False, "rcFor": "", "milestoneFor": "",
+                         "checksumUrl": "https://services.gradle.org/distributions/gradle-9.9.1-bin.zip.sha256",
+                         "wrapperChecksumUrl": "https://services.gradle.org/distributions/gradle-9.9.1-wrapper.jar.sha256"}
+                entry.update(flags)
+                return Response([{"version": "9.10-rc-1", "rcFor": "9.10"}, entry])
+            if url.endswith("-bin.zip.sha256") or url.endswith("-all.zip.sha256"):
+                return Response(WRAPPER_SUM + "\n", raw=True)
+            if url.endswith("-wrapper.jar.sha256"):
+                return Response(JAR_SUM, raw=True)
+            if url == "https://api.osv.dev/v1/query":
+                payload = json.loads(request.data)
+                if payload["package"]["name"] == "org.gradle:gradle-tooling-api":
+                    self.assertEqual(payload["package"]["ecosystem"], "Maven")
+                    self.assertEqual(payload["version"], "9.9.1")
+                    return Response({"vulns": []})
+            if delegate:
+                return delegate(request, timeout)
+            raise AssertionError(url)
+        return open_request, calls
+
+    def test_relevant_path_covers_wrapper_files(self):
+        for path in ("gradle/wrapper/gradle-wrapper.properties",
+                     "android/gradle/wrapper/gradle-wrapper.properties",
+                     "gradle/wrapper/gradle-wrapper.jar"):
+            self.assertTrue(vetting.relevant_path(path), "wrapper file must be vetted")
+
+    def test_changed_dependencies_reports_wrapper_bump(self):
+        deps = vetting.changed_dependencies(wrapper_files("9.8.2"), wrapper_files())
+        self.assertEqual([(d.ecosystem, d.name, d.version) for d in deps],
+                         [("gradle-wrapper", "gradle", "9.9.1")])
+
+    def test_wrapper_only_bump_is_vetted_and_reported(self):
+        opener, _ = self.opener()
+        findings, reason = vetting.vet(wrapper_files("9.8.2"), wrapper_files(), now=NOW, opener=opener)
+        self.assertIsNone(reason)
+        report = findings[0].report()
+        self.assertIn("gradle-wrapper gradle@9.9.1: first published 2026-01-01T12:00:00+00:00", report)
+        self.assertIn("publisher Gradle Inc.", report)
+        self.assertIn("source https://services.gradle.org/distributions/gradle-9.9.1-bin.zip", report)
+        self.assertIn("advisories none", report)
+        self.assertIn(f"distributionSha256Sum {WRAPPER_SUM} (verified)", report)
+
+    def test_recent_wrapper_is_blocked_with_eligible_at(self):
+        opener, _ = self.opener(build_time="20261020000000+0000")
+        result = vetting.vet(wrapper_files("9.8.2"), wrapper_files(), now=NOW, opener=opener)
+        self.assertIn("published less than 14 days ago", result.reason)
+        self.assertEqual(result.eligible_at, "2026-11-03T00:00:00+00:00")
+
+    def test_absent_checksum_is_recorded_not_blocking(self):
+        opener, _ = self.opener()
+        findings, reason = vetting.vet({}, wrapper_files(sum_=None), now=NOW, opener=opener)
+        self.assertIsNone(reason)
+        self.assertIn("distributionSha256Sum absent", findings[0].report())
+
+    def test_checksum_mismatch_fails_closed(self):
+        opener, _ = self.opener()
+        with self.assertRaisesRegex(vetting.VettingError, "distributionSha256Sum does not match"):
+            vetting.vet({}, wrapper_files(sum_="c" * 64), now=NOW, opener=opener)
+
+    def test_unparseable_or_unofficial_url_fails_closed(self):
+        for url in ("https\\://mirror.example.com/gradle-9.9.1-bin.zip",
+                    "file\\:///tmp/gradle-9.9.1-bin.zip",
+                    "https\\://services.gradle.org/distributions/gradle-latest-bin.zip", None):
+            with self.subTest(url=url):
+                files = {WRAPPER_PATH: "distributionBase=GRADLE_USER_HOME\n"
+                         + (f"distributionUrl={url}\n" if url else "")}
+                with self.assertRaisesRegex(
+                        vetting.VettingError,
+                        f"unparseable or non-official Gradle distributionUrl in {WRAPPER_PATH}"):
+                    vetting.changed_dependencies({}, files)
+
+    def test_not_final_or_missing_release_fails_closed(self):
+        for flags in ({"snapshot": True}, {"rcFor": "9.9.1"}):
+            opener, _ = self.opener(**flags)
+            with self.assertRaisesRegex(vetting.VettingError, "not a final release"):
+                vetting.vet({}, wrapper_files(), now=NOW, opener=opener)
+        opener, _ = self.opener()
+        with self.assertRaisesRegex(vetting.VettingError, "unresolved Gradle release"):
+            vetting.vet({}, wrapper_files("9.9.2"), now=NOW, opener=opener)
+
+    def test_jar_with_version_bump_is_checked(self):
+        opener, _ = self.opener()
+        before, after = wrapper_files("9.8.2", jar="d" * 64), wrapper_files(jar=JAR_SUM)
+        findings, reason = vetting.vet(before, after, now=NOW, opener=opener)
+        self.assertIsNone(reason)
+        self.assertIn("wrapper jar sha256 verified", findings[0].report())
+        with self.assertRaisesRegex(vetting.VettingError, "gradle-wrapper.jar sha256 does not match"):
+            vetting.vet(before, wrapper_files(jar="e" * 64), now=NOW, opener=opener)
+
+    def test_jar_without_version_bump_fails_closed(self):
+        before, after = wrapper_files(jar="d" * 64), wrapper_files(jar=JAR_SUM)
+        with self.assertRaisesRegex(vetting.VettingError, "changed without a Gradle wrapper version"):
+            vetting.changed_dependencies(before, after)
+        jar_only = {JAR_PATH: "sha256:" + JAR_SUM}
+        with self.assertRaisesRegex(vetting.VettingError, "changed without a Gradle wrapper version"):
+            vetting.changed_dependencies({}, jar_only)
+
+    def test_wrapper_plus_library_bump_reports_both(self):
+        library = SwiftGradleTests()
+        opener, _ = self.opener(delegate=library.opener())
+        before = {**wrapper_files("9.8.2"), **gradle_files("1.2.2")}
+        after = {**wrapper_files(), **gradle_files("1.2.3")}
+        # The library opener asserts OSV version 1.2.3 for non-wrapper packages.
+        findings, reason = vetting.vet(before, after, now=NOW, opener=opener)
+        self.assertIsNone(reason)
+        reports = [f.report() for f in findings]
+        self.assertTrue(any(r.startswith("gradle-wrapper gradle@9.9.1:") for r in reports))
+        self.assertTrue(any(r.startswith("gradle org.example:demo@1.2.3:") for r in reports))
+
+
 if __name__ == "__main__":
     unittest.main()
