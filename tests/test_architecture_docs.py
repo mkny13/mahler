@@ -1,5 +1,9 @@
 """Repository-only guards for the current architecture map and its references."""
 
+import argparse
+import json
+from io import StringIO
+from unittest.mock import patch
 from pathlib import Path
 import re
 import unittest
@@ -72,3 +76,38 @@ class ArchitectureDocsTests(unittest.TestCase):
                                      '## Next\n'))
         self.assertEqual(paths, ['mahler/missing.py'])
         self.assertFalse((ROOT / paths[0]).exists())
+
+    def test_cli_inventory_matches_parser(self):
+        from mahler.cli import build_parser
+        parser = build_parser()
+        commands = next(a.choices for a in parser._actions
+                        if isinstance(a, argparse._SubParsersAction))
+        architecture = (ROOT / 'ARCHITECTURE.md').read_text()
+        section = architecture.split('### CLI command inventory\n', 1)[1].split('\n## ', 1)[0]
+        documented = re.findall(r'`([a-z][a-z-]+)`', section)
+        self.assertEqual(set(documented), set(commands))
+        self.assertEqual(len(documented), len(set(documented)))
+
+    def test_mcp_inventory_matches_protocol(self):
+        from mahler.ledger import Ledger
+        from mahler.mcp import serve
+        request = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})
+        output = StringIO()
+        led = Ledger(':memory:')
+        self.addCleanup(led.close)
+        with patch('sys.stdin', StringIO(request + '\n')), patch('sys.stdout', output):
+            serve({}, led)
+        names = {tool['name'] for tool in json.loads(output.getvalue())['result']['tools']}
+        architecture = (ROOT / 'ARCHITECTURE.md').read_text()
+        row = next(line for line in architecture.splitlines() if line.startswith('| MCP server |'))
+        documented = re.findall(r'`([^`]+)`', row.split('|')[3])
+        self.assertEqual(set(documented), names)
+        self.assertEqual(len(documented), len(names))
+
+    def test_design_inventory_is_preserved(self):
+        # Existing historical IDs, including allocation gaps, must survive reconciliation.
+        numbers = list(map(int, re.findall(r'^### D(\d+)\b',
+                                         (ROOT / 'DESIGN.md').read_text(), re.MULTILINE)))
+        expected = set(range(1, 53)) - {32, 37, 38, 42, 48, 49}
+        self.assertTrue(expected <= set(numbers))
+        self.assertEqual(len(numbers), len(set(numbers)))

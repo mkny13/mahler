@@ -39,10 +39,11 @@ Playwright and preview deploys already in place, and it has real personal data.
 - #925 delivered the approved console panel. One live work conversation and its confirmed
   issue links remain post-merge evidence; the operator-started discussion feature is shipped.
 
-## Current state (repository evidence, 2026-11-22)
+## Current state (repository evidence, 2026-11-27)
 
-The four committed audits establish shipped implementation, not live machine or project
-inventory: [lifecycle](docs/audits/1670-lifecycle-state.md),
+This reconciliation uses the current modules, CLI parser, MCP tools/list response and
+hermetic tests. Earlier committed audits provide supporting evidence, not live machine
+or project inventory: [lifecycle](docs/audits/1670-lifecycle-state.md),
 [execution/shipping](docs/audits/1670-execution-shipping.md),
 [routing/accounts](docs/audits/1670-routing-quota-accounts.md), and
 [operator/maintenance](docs/audits/1670-operator-maintenance.md).
@@ -77,6 +78,14 @@ operator configuration remains the authority for enablement, credentials and exp
 
 
 ---
+
+## Historical phase records
+
+The phases below retain the original plan and dated rollout observations, beginning
+2026-09-12. Checked boxes record those observations, not a fresh live check.
+Installed providers, backup disks, account access, project enablement and console
+exposure remain unknown in this repository-only review. Current implementation
+status is summarized above; remaining work is consolidated below.
 
 ## Phase 0 — Spikes
 
@@ -409,7 +418,30 @@ still open is tuning: keep it only where it pays for itself.
 
 ---
 
-## Still open (not blocking)
+## Still open (repository reconciliation, 2026-11-27)
+
+This finite list consolidates the remaining phase targets; it is not a claim that
+all are scheduled or required for the shipped service.
+
+- **MCP and interactive integration:** `ask_user`, `report_progress`, `get_context`,
+  and the proposed Mahler-aware handoff/pickup skills; the shipped local server has
+  seven tools (`mahler/mcp.py`).
+- **Recovery:** comment-command undo and platform rollback/redeploy; configured
+  PostgreSQL and ledger backups exist, while other store adapters, automated restore
+  drills, staging seeding, and mandatory risky-deploy backup receipts remain targets.
+- **Intake and feedback:** native anomaly sensing, runtime-error intake, goal breakdown,
+  and Android/Maestro capture flows. Existing screenshots and console walkthroughs
+  do not establish these integrations.
+- **Operator and rollout qualification:** notification-copy review, phone reachability,
+  pre-emption journeys, project onboarding/data inventories, external-dispatcher cleanup,
+  offsite coverage and secrets audits remain deployment evidence or phase targets.
+  Repository tests cannot attest to their live completion.
+- **Optional workers and reporting:** cloud workers, OpenCode, self-hosted ntfy and
+  further quota analytics remain proposals. Run usage, scorecards and capacity already
+  ship; opt-in SDK/Kiro/Vibe code does not establish live login or enablement.
+- **Platform experiments:** locked-screen SwiftUI snapshots and Apple/Android runner
+  placement remain experiments, subject to the desktop gate for GUI-driving work.
+
 
 - **Antigravity IDE quota:** whether it shares the CLI's pools. It only matters if you also
   use the IDE interactively.
