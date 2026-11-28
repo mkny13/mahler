@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
-from mahler import config, prompt, runner, no_change
+from mahler import config, prompt, runner, no_change, lessons
 from mahler.ledger import Ledger
 from mahler.gh import depends_of, parse_command
 
@@ -96,6 +96,50 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn("new.txt", files.split())
         content = sh(self.remote, "git", "show", "mahler/snapshot/12-run5:a.txt")
         self.assertEqual(content, "one\ntwo")
+
+    def _load_snapshot_lesson(self, suppressed=True):
+        rel = ".agents/skills/lesson-a/SKILL.md"
+        path = Path(self.repo) / rel
+        path.parent.mkdir(parents=True)
+        text = ("---\nname: lesson-a\ndescription: Use when the build fails on X.\n"
+                "metadata:\n  mahler-id: 58d1fc1f8ac8de24\n"
+                "  created: 2026-10-01\n  updated: 2026-10-02\n"
+                "  source: '#12'\n---\nRun the formatter first.\n")
+        path.write_text("invalid frontmatter\n" if suppressed else text)
+        sh(self.repo, "git", "add", ".")
+        sh(self.repo, "git", "commit", "-qm", "lesson")
+        sh(self.repo, "git", "push", "-q", "origin", "main")
+        result = lessons.load(self.repo, self.repo, "origin/main", "p")
+        self.assertEqual(bool(result["rejected"]), suppressed)
+        self.assertEqual(path.exists(), not suppressed)
+        self.assertEqual(sh(self.repo, "git", "status", "--porcelain"), "")
+        return rel
+
+    def test_snapshot_preserves_suppressed_lessons_when_clean(self):
+        self._load_snapshot_lesson()
+        self.assertIsNone(runner.snapshot(self.repo, self.repo, 5, 12, "main"))
+
+    def test_snapshot_preserves_suppressed_lessons_with_uncommitted_work(self):
+        rel = self._load_snapshot_lesson()
+        write(os.path.join(self.repo, "a.txt"), "changed\n")
+        write(os.path.join(self.repo, "new.txt"), "new\n")
+        index = Path(sh(self.repo, "git", "rev-parse", "--absolute-git-dir")) / "index"
+        before = index.read_bytes()
+        saved = runner.snapshot(self.repo, self.repo, 5, 12, "main")
+        self.assertEqual(sh(self.repo, "git", "rev-parse", f"{saved['sha']}:{rel}"),
+                         sh(self.repo, "git", "rev-parse", f"HEAD:{rel}"))
+        self.assertEqual(sh(self.repo, "git", "show", f"{saved['sha']}:a.txt"), "changed")
+        self.assertEqual(sh(self.repo, "git", "show", f"{saved['sha']}:new.txt"), "new")
+        self.assertEqual(index.read_bytes(), before)
+        self.assertFalse((Path(self.repo) / rel).exists())
+
+    def test_snapshot_captures_edits_to_active_lessons(self):
+        rel = self._load_snapshot_lesson(suppressed=False)
+        path = Path(self.repo) / rel
+        path.write_text(path.read_text() + "Run tests afterward.\n")
+        saved = runner.snapshot(self.repo, self.repo, 5, 12, "main")
+        self.assertEqual(sh(self.repo, "git", "show", f"{saved['sha']}:{rel}"),
+                         path.read_text().strip())
 
     def test_unpushed_commits_are_saved(self):
         write(os.path.join(self.repo, "b.txt"), "b\n")
