@@ -54,12 +54,15 @@ python3 -m mahler.repo_guard
 python3 -m unittest discover -s tests
 python3 tests/run_random.py
 python3 -X dev tests/run_strict.py
+/bin/sh scripts/verify_sdk_runner.sh
 ```
 
 Python 3.14+, standard library only. The lease rules (`tests/test_ledger.py`) are the
 part that must stay right. Extend those tests whenever you touch `ledger.py`.
 
-CI runs all four commands. The repository guard rejects tracked browser-profile state;
+CI runs all five commands. The SDK packaging gate builds and installs a wheel in
+a disposable environment and checks the installed CLI without inference or credentials;
+it may download the declared build requirements. The repository guard rejects tracked browser-profile state;
 the randomized runner detects order dependencies, and the strict runner turns resource
 leaks and unraisable exceptions into failures.
 

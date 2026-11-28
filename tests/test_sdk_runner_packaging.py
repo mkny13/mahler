@@ -22,6 +22,7 @@ class SDKRunnerPackagingTests(unittest.TestCase):
             shutil.copy2(script, checkout / 'scripts' / script.name)
             shutil.copytree(ROOT / 'sdk_runner', checkout / 'sdk_runner',
                             ignore=shutil.ignore_patterns('build', '*.egg-info', '__pycache__'))
+            original_files = sorted(p.relative_to(checkout) for p in checkout.rglob('*'))
             manifest = checkout / 'sdk_runner/pyproject.toml'
             if replacement:
                 before, after = replacement
@@ -37,8 +38,8 @@ class SDKRunnerPackagingTests(unittest.TestCase):
                 cwd=unrelated, env={'PATH': os.environ['PATH'], 'TMPDIR': str(scratch)},
                 capture_output=True, text=True, timeout=180)
             self.assertEqual(list(scratch.iterdir()), [], 'gate leaked temporary files')
-            self.assertEqual(sorted(p.name for p in (checkout / 'sdk_runner').iterdir()),
-                             ['README.md', 'mahler_sdk_run.py', 'pyproject.toml'])
+            self.assertEqual(sorted(p.relative_to(checkout) for p in checkout.rglob('*')),
+                             original_files, 'build polluted the checkout')
             return result
 
     def test_installed_package_metadata_and_cli(self):
